@@ -1,0 +1,30 @@
+services:
+  appscan:
+    build: .
+    image: appscan:0.1
+    restart: unless-stopped
+    init: true
+    ports:
+      - "${APPSCAN_BIND:-127.0.0.1}:${APPSCAN_PORT:-8088}:8080"
+    environment:
+      APPSCAN_USER: "${APPSCAN_USER:-admin}"
+      APPSCAN_PASSWORD: "${APPSCAN_PASSWORD:?Run setup.sh first}"
+    volumes:
+      - appscan-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+volumes:
+  appscan-data:
