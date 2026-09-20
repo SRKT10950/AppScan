@@ -2,7 +2,7 @@
   "name": "appscan-salesforce",
   "displayName": "AppScan - Salesforce Security & Code Analysis",
   "description": "On-premises Salesforce code analysis, security linting, quality gates, and git baseline comparison for VS Code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "srkt",
   "engines": {
     "vscode": "^1.80.0"
@@ -23,33 +23,33 @@
   "main": "./dist/extension.js",
   "activationEvents": [
     "onLanguage:apex",
-    "onLanguage:apex-anon",
-    "onLanguage:visualforce",
-    "onLanguage:xml",
-    "workspaceContains:**/sfdx-project.json",
-    "workspaceContains:**/force-app/**"
+    "onCommand:appscan.scanWorkspace",
+    "onCommand:appscan.scanWithCustomBaseline",
+    "onCommand:appscan.scanFolder",
+    "onCommand:appscan.showReport",
+    "onCommand:appscan.clearFindings"
   ],
   "contributes": {
     "commands": [
       {
         "command": "appscan.scanWorkspace",
-        "title": "AppScan: Run Scan vs Baseline (main)",
+        "title": "AppScan: Scan Workspace against Baseline",
         "icon": "$(shield)"
       },
       {
         "command": "appscan.scanWithCustomBaseline",
-        "title": "AppScan: Run Scan with Prompted Baseline...",
+        "title": "AppScan: Scan with Custom Baseline Branch/Tag...",
         "icon": "$(git-compare)"
       },
       {
         "command": "appscan.scanFolder",
-        "title": "AppScan: Scan Selected Folder...",
+        "title": "AppScan: Scan Selected Folder",
         "icon": "$(folder)"
       },
       {
         "command": "appscan.showReport",
-        "title": "AppScan: Show Latest Scan Dashboard",
-        "icon": "$(dashboard)"
+        "title": "AppScan: Show Quality Gate & Findings Dashboard",
+        "icon": "$(report)"
       },
       {
         "command": "appscan.clearFindings",
@@ -58,6 +58,13 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "appscan.scanFolder",
+          "group": "7_modification",
+          "when": "explorerResourceIsFolder"
+        }
+      ],
       "commandPalette": [
         { "command": "appscan.scanWorkspace" },
         { "command": "appscan.scanWithCustomBaseline" },
@@ -78,7 +85,7 @@
       "properties": {
         "appscan.serverUrl": {
           "type": "string",
-          "default": "http://localhost:8089",
+          "default": "http://192.168.50.109:8089",
           "description": "URL of the AppScan backend server"
         },
         "appscan.username": {

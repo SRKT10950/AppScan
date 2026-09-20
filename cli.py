@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 AppScan CLI - VS Code & Terminal runner for Salesforce Code Analysis.
 Compares current workspace code against a baseline git branch/commit.
@@ -162,9 +162,9 @@ def main():
     if not env_vars:
         env_vars = load_env_file(git_root / ".env")
 
-    server_url = args.server or os.environ.get("APPSCAN_URL") or f"http://localhost:{env_vars.get('APPSCAN_PORT', '8089')}"
+    server_url = args.server or os.environ.get("APPSCAN_URL") or env_vars.get("APPSCAN_URL") or "http://192.168.50.109:8089"
     user = os.environ.get("APPSCAN_USER") or env_vars.get("APPSCAN_USER", "admin")
-    password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD", "")
+    password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD") or "AppScanSecretPass2026!"
     project = args.project or git_root.name
 
     print(f"[*] AppScan Salesforce Code Analysis")
@@ -202,6 +202,20 @@ def main():
         sys.path.insert(0, str(appscan_dir))
         print("[*] Running scan via in-process engine...")
         scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version)
+        # Record direct scan to DB if db module is available
+        try:
+            from app.db import get_db
+            import secrets
+            from datetime import datetime, timezone
+            direct_id = secrets.token_hex(16)
+            with get_db() as db_con:
+                db_con.execute(
+                    "INSERT INTO scans (id, project, created, status, result) VALUES (?, ?, ?, ?, ?)",
+                    (direct_id, project, datetime.now(timezone.utc).isoformat(), 'complete', json.dumps(scan_result))
+                )
+            print(f"[*] Scan saved to central database (ID: {direct_id})")
+        except Exception as db_err:
+            print(f"[-] Note: Direct scan not saved to central DB ({db_err})")
 
     # Save output artifacts
     out_dir = git_root / args.output_dir
