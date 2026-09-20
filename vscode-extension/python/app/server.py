@@ -103,16 +103,8 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
-    def _normalize_path(self):
-        raw_path = urllib.parse.urlsplit(self.path).path
-        if raw_path == '/appscan':
-            return '/'
-        if raw_path.startswith('/appscan/'):
-            return raw_path[len('/appscan'):]
-        return raw_path
-
     def do_GET(self):
-        path = self._normalize_path()
+        path = urllib.parse.urlsplit(self.path).path
         if path == '/healthz':
             return self.send(200, {'status': 'ok'})
         assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
@@ -149,8 +141,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorized():
             return
-        path = self._normalize_path()
-        if path != '/api/scans':
+        if self.path != '/api/scans':
             return self.send(404, {'error': 'Not found.'})
         if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
             return self.send(415, {'error': 'Use application/json.'})

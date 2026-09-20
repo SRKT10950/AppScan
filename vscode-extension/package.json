@@ -1,0 +1,117 @@
+{
+  "name": "appscan-salesforce",
+  "displayName": "AppScan - Salesforce Security & Code Analysis",
+  "description": "On-premises Salesforce code analysis, security linting, quality gates, and git baseline comparison for VS Code",
+  "version": "0.1.0",
+  "publisher": "srkt",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Testing"
+  ],
+  "keywords": [
+    "salesforce",
+    "apex",
+    "security",
+    "pmd",
+    "quality-gate",
+    "baseline"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:apex",
+    "onLanguage:apex-anon",
+    "onLanguage:visualforce",
+    "onLanguage:xml",
+    "workspaceContains:**/sfdx-project.json",
+    "workspaceContains:**/force-app/**"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "appscan.scanWorkspace",
+        "title": "AppScan: Run Scan vs Baseline (main)",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "appscan.scanWithCustomBaseline",
+        "title": "AppScan: Run Scan with Prompted Baseline...",
+        "icon": "$(git-compare)"
+      },
+      {
+        "command": "appscan.scanFolder",
+        "title": "AppScan: Scan Selected Folder...",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "appscan.showReport",
+        "title": "AppScan: Show Latest Scan Dashboard",
+        "icon": "$(dashboard)"
+      },
+      {
+        "command": "appscan.clearFindings",
+        "title": "AppScan: Clear Diagnostic Findings",
+        "icon": "$(clear-all)"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "appscan.scanWorkspace" },
+        { "command": "appscan.scanWithCustomBaseline" },
+        { "command": "appscan.scanFolder" },
+        { "command": "appscan.showReport" },
+        { "command": "appscan.clearFindings" }
+      ],
+      "editor/title": [
+        {
+          "command": "appscan.scanWorkspace",
+          "group": "navigation",
+          "when": "resourceExtname =~ /\\.(cls|trigger|page|xml)$/"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AppScan",
+      "properties": {
+        "appscan.serverUrl": {
+          "type": "string",
+          "default": "http://localhost:8089",
+          "description": "URL of the AppScan backend server"
+        },
+        "appscan.username": {
+          "type": "string",
+          "default": "admin",
+          "description": "AppScan server username"
+        },
+        "appscan.password": {
+          "type": "string",
+          "default": "",
+          "description": "AppScan server password (if empty, read from AppScan/.env)"
+        },
+        "appscan.defaultBaseline": {
+          "type": "string",
+          "default": "main",
+          "description": "Default Git branch or commit to use as baseline"
+        },
+        "appscan.apiVersion": {
+          "type": "string",
+          "default": "64.0",
+          "description": "Target Salesforce Metadata API version"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.4.0"
+  }
+}

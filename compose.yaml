@@ -5,10 +5,16 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${APPSCAN_BIND:-127.0.0.1}:${APPSCAN_PORT:-8088}:8080"
+      - "${APPSCAN_BIND:-127.0.0.1}:${APPSCAN_PORT:-8089}:8080"
     environment:
       APPSCAN_USER: "${APPSCAN_USER:-admin}"
       APPSCAN_PASSWORD: "${APPSCAN_PASSWORD:?Run setup.sh first}"
+      DATABASE_URL: "${DATABASE_URL:-postgresql://postgres:postgres_master_pass_2026@host.docker.internal:5432/appscan_db}"
+      CENTRAL_PG_HOST: "${CENTRAL_PG_HOST:-host.docker.internal}"
+      CENTRAL_PG_PORT: "${CENTRAL_PG_PORT:-5432}"
+      CENTRAL_PG_USER: "${CENTRAL_PG_USER:-postgres}"
+      CENTRAL_PG_PASSWORD: "${CENTRAL_PG_PASSWORD:-postgres_master_pass_2026}"
+      CENTRAL_PG_DATABASE: "${CENTRAL_PG_DATABASE:-appscan_db}"
     volumes:
       - appscan-data:/data
     read_only: true
