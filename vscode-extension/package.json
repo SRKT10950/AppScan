@@ -118,8 +118,23 @@
       "properties": {
         "appscan.serverUrl": {
           "type": "string",
-          "default": "http://192.168.50.109:8089",
-          "description": "URL of the AppScan backend server"
+          "default": "https://mhservice.co.in/appscan",
+          "description": "URL of the AppScan backend server (e.g. https://mhservice.co.in/appscan or http://localhost:8089)"
+        },
+        "appscan.offline": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run static code analysis locally without connecting to an AppScan server"
+        },
+        "appscan.fallbackToOffline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fall back to local offline analysis if the remote server is unreachable"
+        },
+        "appscan.pmdBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to PMD executable script (e.g. C:\\pmd\\bin\\pmd.bat or /opt/pmd/bin/pmd)"
         },
         "appscan.username": {
           "type": "string",

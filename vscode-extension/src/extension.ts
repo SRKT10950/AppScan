@@ -6,12 +6,16 @@ import { ReportPanel } from "./reportPanel";
 
 let diagnosticCollection: vscode.DiagnosticCollection;
 let statusBarItem: vscode.StatusBarItem;
+let outputChannel: vscode.OutputChannel;
 let latestScanResult: any = null;
 let latestProjectName: string = "Salesforce App";
 
 export function activate(context: vscode.ExtensionContext) {
+  outputChannel = vscode.window.createOutputChannel("AppScan");
+  context.subscriptions.push(outputChannel);
+
   context.subscriptions.push(vscode.commands.registerCommand("appscan.setToken", async () => {
-    const serverUrl = vscode.workspace.getConfiguration("appscan").get<string>("serverUrl", "http://localhost:8089");
+    const serverUrl = vscode.workspace.getConfiguration("appscan").get<string>("serverUrl", "https://mhservice.co.in/appscan");
     const token = await vscode.window.showInputBox({prompt: "AppScan project API token (blank clears it)", password: true, ignoreFocusOut: true});
     if (token !== undefined) {
       if (token) await context.secrets.store("appscan.token:" + serverUrl, token);
@@ -128,8 +132,11 @@ async function runScan(
 
   const workspaceRoot = workspaceFolders[0].uri.fsPath;
   const config = vscode.workspace.getConfiguration("appscan");
-  const serverUrl = config.get<string>("serverUrl", "http://localhost:8089");
+  const serverUrl = config.get<string>("serverUrl", "https://mhservice.co.in/appscan");
+  const isOffline = config.get<boolean>("offline", false);
+  const fallbackToOffline = config.get<boolean>("fallbackToOffline", true);
   const apiVersion = config.get<string>("apiVersion", "64.0");
+  const pmdBinPath = config.get<string>("pmdBinPath", "");
 
   let cliPath = path.join(context.extensionPath, "python", "cli.py");
   if (!fs.existsSync(cliPath)) {
@@ -153,18 +160,43 @@ async function runScan(
       cancellable: false
     },
     async (progress) => {
-      progress.report({ message: `Comparing against baseline '${baseline || "none"}'...` });
+      progress.report({ message: `Preparing analysis...` });
 
-      const outputDir = path.join(".appscan", "run-" + Date.now() + "-" + Math.random().toString(16).slice(2));
-      const args: string[] = [cliPath, "--api-version", apiVersion, "--server", serverUrl, "--output-dir", outputDir];
+      const outputDir = path.join(workspaceRoot, ".appscan", "run-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+      const args: string[] = [cliPath, "--api-version", apiVersion, "--output-dir", outputDir];
+
+      if (isOffline) {
+        args.push("--offline");
+      } else {
+        args.push("--server", serverUrl);
+        if (fallbackToOffline) {
+          args.push("--fallback-offline");
+        }
+      }
+
       try {
         const branch = execFileSync("git", ["branch", "--show-current"], {cwd: workspaceRoot, encoding: "utf8"}).trim();
         const revision = execFileSync("git", ["rev-parse", "HEAD"], {cwd: workspaceRoot, encoding: "utf8"}).trim();
         args.push("--branch", branch || "detached", "--revision", revision);
-      } catch { /* Non-git workspaces still receive server analysis. */ }
-      if (baseline) {
-        args.push("--baseline", baseline);
+      } catch { /* Non-git workspaces still receive scan analysis. */ }
+
+      let effectiveBaseline = baseline;
+      if (effectiveBaseline) {
+        try {
+          execFileSync("git", ["rev-parse", "--verify", effectiveBaseline + "^{commit}"], { cwd: workspaceRoot, stdio: "ignore" });
+        } catch {
+          try {
+            execFileSync("git", ["rev-parse", "--verify", `origin/${effectiveBaseline}^{commit}`], { cwd: workspaceRoot, stdio: "ignore" });
+            effectiveBaseline = `origin/${effectiveBaseline}`;
+          } catch {
+            effectiveBaseline = undefined;
+          }
+        }
       }
+      if (effectiveBaseline) {
+        args.push("--baseline", effectiveBaseline);
+      }
+
       if (subpath) {
         args.push("--path", subpath);
       }
@@ -191,14 +223,18 @@ async function runScan(
           const password = config.get<string>("password", "");
           if (password) credentials.APPSCAN_PASSWORD = password;
         }
-        await executePythonCli(args, workspaceRoot, credentials);
-        const reportFile = path.join(workspaceRoot, outputDir, "report.json");
+
+        outputChannel.appendLine(`\n=== AppScan Execution: ${new Date().toISOString()} ===`);
+        const cliResult = await executePythonCli(args, workspaceRoot, credentials, pmdBinPath);
+        const reportFile = path.join(outputDir, "report.json");
 
         if (fs.existsSync(reportFile)) {
           const raw = fs.readFileSync(reportFile, "utf-8");
           latestScanResult = JSON.parse(raw);
         } else {
-          throw new Error("The scanner did not produce a report. No quality gate can be inferred.");
+          outputChannel.show(true);
+          const errDetail = cliResult.stderr.trim() || cliResult.stdout.trim() || `Process exited with code ${cliResult.code}`;
+          throw new Error(`The scanner did not produce a report.\n\nError details:\n${errDetail}`);
         }
 
         latestProjectName = path.basename(workspaceRoot);
@@ -248,7 +284,11 @@ async function runScan(
         }
       } catch (err: any) {
         statusBarItem.text = "$(error) AppScan: Error";
-        vscode.window.showErrorMessage(`AppScan failed: ${err.message || err}`);
+        vscode.window.showErrorMessage(`AppScan failed: ${err.message || err}`, "Show Output").then((sel) => {
+          if (sel === "Show Output") {
+            outputChannel.show(true);
+          }
+        });
       }
     }
   );
@@ -267,6 +307,7 @@ async function mapTestClasses(context: vscode.ExtensionContext) {
 
   const workspaceRoot = workspaceFolders[0].uri.fsPath;
   const config = vscode.workspace.getConfiguration("appscan");
+  const pmdBinPath = config.get<string>("pmdBinPath", "");
 
   let cliPath = path.join(context.extensionPath, "python", "cli.py");
   if (!fs.existsSync(cliPath)) {
@@ -294,7 +335,7 @@ async function mapTestClasses(context: vscode.ExtensionContext) {
     },
     async () => {
       try {
-        await executePythonCli(args, workspaceRoot, {});
+        await executePythonCli(args, workspaceRoot, {}, pmdBinPath);
         const mapFile = path.join(workspaceRoot, testMapping || ".appscan/test-mapping.json");
         vscode.window
           .showInformationMessage(
@@ -308,41 +349,65 @@ async function mapTestClasses(context: vscode.ExtensionContext) {
             }
           });
       } catch (err: any) {
-        vscode.window.showErrorMessage(`Failed to map test classes: ${err.message || err}`);
+        vscode.window.showErrorMessage(`Failed to map test classes: ${err.message || err}`, "Show Output").then((sel) => {
+          if (sel === "Show Output") {
+            outputChannel.show(true);
+          }
+        });
       }
     }
   );
 }
 
-function executePythonCli(args: string[], cwd: string, credentials: NodeJS.ProcessEnv): Promise<string> {
+function executePythonCli(
+  args: string[],
+  cwd: string,
+  credentials: NodeJS.ProcessEnv,
+  pmdBinPath?: string
+): Promise<{ stdout: string; stderr: string; code: number }> {
   return new Promise((resolve, reject) => {
     const pythonCmd = process.platform === "win32" ? "python" : "python3";
     const env = { ...process.env, ...credentials };
-    if (!env.PMD_BIN && process.platform === "win32") {
-      env.PMD_BIN = "D:\\Linux Server\\AppScan\\pmd\\bin\\pmd.bat";
+
+    if (pmdBinPath && fs.existsSync(pmdBinPath)) {
+      env.PMD_BIN = pmdBinPath;
+    } else if (!env.PMD_BIN && process.platform === "win32") {
+      const candidates = [
+        path.join(cwd, "pmd", "bin", "pmd.bat"),
+        "C:\\pmd\\bin\\pmd.bat",
+        "D:\\Linux Server\\AppScan\\pmd\\bin\\pmd.bat"
+      ];
+      for (const c of candidates) {
+        if (fs.existsSync(c)) {
+          env.PMD_BIN = c;
+          break;
+        }
+      }
     }
+
+    outputChannel.appendLine(`[SPAWN] ${pythonCmd} ${args.join(" ")}`);
     const proc = spawn(pythonCmd, args, { cwd, shell: false, env });
     let stdout = "";
     let stderr = "";
 
     proc.stdout.on("data", (data) => {
-      stdout += data.toString();
+      const str = data.toString();
+      stdout += str;
+      outputChannel.append(str);
     });
 
     proc.stderr.on("data", (data) => {
-      stderr += data.toString();
+      const str = data.toString();
+      stderr += str;
+      outputChannel.append(str);
     });
 
     proc.on("close", (code) => {
-      // Exit code 0 is PASS, code 1 is FAIL/violations detected
-      if (code === 0 || code === 1) {
-        resolve(stdout);
-      } else {
-        reject(new Error(stderr || stdout || `Process exited with code ${code}`));
-      }
+      resolve({ stdout, stderr, code: code ?? 0 });
     });
 
     proc.on("error", (err) => {
+      outputChannel.appendLine(`[ERROR] ${err.message || err}`);
       reject(err);
     });
   });

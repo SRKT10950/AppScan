@@ -50,9 +50,12 @@ def load_env_file(env_path: Path):
     return env
 
 def get_git_root(cwd: Path) -> Path:
-    proc = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True, check=False)
-    if proc.returncode == 0 and proc.stdout.strip():
-        return Path(proc.stdout.strip())
+    try:
+        proc = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True, check=False)
+        if proc.returncode == 0 and proc.stdout.strip():
+            return Path(proc.stdout.strip())
+    except Exception:
+        pass
     return cwd
 
 def is_ignored(path_str: str) -> bool:
@@ -159,22 +162,25 @@ def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version:
 def get_modified_classes(git_root: Path, baseline: str | None, subpath: str | None = None) -> list[str]:
     """Find Apex classes modified or added relative to baseline or uncommitted changes."""
     modified = set()
-    if baseline:
-        cmd = ["git", "diff", "--name-only", baseline]
-        if subpath:
-            cmd.extend(["--", subpath])
-        proc = subprocess.run(cmd, cwd=git_root, capture_output=True, text=True, check=False)
+    try:
+        if baseline:
+            cmd = ["git", "diff", "--name-only", baseline]
+            if subpath:
+                cmd.extend(["--", subpath])
+            proc = subprocess.run(cmd, cwd=git_root, capture_output=True, text=True, check=False)
+            if proc.returncode == 0:
+                for line in proc.stdout.splitlines():
+                    if line.endswith(".cls"):
+                        modified.add(Path(line).stem)
+        # Also check uncommitted working directory changes
+        proc = subprocess.run(["git", "status", "--porcelain"], cwd=git_root, capture_output=True, text=True, check=False)
         if proc.returncode == 0:
             for line in proc.stdout.splitlines():
-                if line.endswith(".cls"):
-                    modified.add(Path(line).stem)
-    # Also check uncommitted working directory changes
-    proc = subprocess.run(["git", "status", "--porcelain"], cwd=git_root, capture_output=True, text=True, check=False)
-    if proc.returncode == 0:
-        for line in proc.stdout.splitlines():
-            filepath = line[3:].strip()
-            if filepath.endswith(".cls"):
-                modified.add(Path(filepath).stem)
+                filepath = line[3:].strip()
+                if filepath.endswith(".cls"):
+                    modified.add(Path(filepath).stem)
+    except Exception:
+        pass
     return sorted(list(modified))
 
 def main():
@@ -187,6 +193,7 @@ def main():
     parser.add_argument("--api-version", default="64.0", help="Salesforce Metadata API version (default: 64.0)")
     parser.add_argument("--output-dir", "-o", default=".appscan", help="Directory to save scan report and manifests")
     parser.add_argument("--offline", action="store_true", help="Run scan directly without connecting to server")
+    parser.add_argument("--fallback-offline", action="store_true", help="Automatically fall back to local direct scan if server is unreachable")
     parser.add_argument("--branch", default="main", help="Branch namespace for server history")
     parser.add_argument("--pull-request", default="", help="Numeric PR identifier; isolated issue namespace")
     parser.add_argument("--revision", default="", help="Commit SHA for traceability")
@@ -229,7 +236,8 @@ def main():
         mapping_file = Path(args.test_mapping) if args.test_mapping else (git_root / ".appscan" / "test-mapping.json")
         test_classes, _ = resolve_tests_for_classes(modified_classes, git_root, mapping_file)
         if test_classes:
-            coverage = run_selective_tests(test_classes, git_root, args.target_org, git_root / args.output_dir)
+            out_target = Path(args.output_dir) if Path(args.output_dir).is_absolute() else (git_root / args.output_dir)
+            coverage = run_selective_tests(test_classes, git_root, args.target_org, out_target)
         else:
             print("[!] No matching test classes found to run.")
     env_vars = load_env_file(appscan_dir / ".env")
@@ -241,7 +249,7 @@ def main():
         if key in env_vars and key not in os.environ:
             os.environ[key] = env_vars[key]
 
-    server_url = args.server or os.environ.get("APPSCAN_URL") or env_vars.get("APPSCAN_URL") or "http://192.168.50.109:8089"
+    server_url = args.server or os.environ.get("APPSCAN_URL") or env_vars.get("APPSCAN_URL") or "https://mhservice.co.in/appscan"
     user = os.environ.get("APPSCAN_USER") or env_vars.get("APPSCAN_USER", "admin")
     password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD", "")
     project = args.project or git_root.name
@@ -257,6 +265,9 @@ def main():
         print("[*] Packaging current working workspace files...")
         current_zip = create_archive_from_working_dir(git_root, args.path)
 
+    if not current_zip:
+        raise RuntimeError("No Salesforce source files (.cls, .trigger, .xml, .js, .html, etc.) found in the target directory to scan.")
+
     # Build baseline archive if requested
     baseline_zip = None
     if args.baseline:
@@ -264,7 +275,11 @@ def main():
         try:
             baseline_zip = create_archive_from_git_ref(args.baseline, git_root, args.path)
         except Exception as e:
-            raise RuntimeError(f"Requested baseline could not be read: {e}") from e
+            if args.baseline in ("main", "master", "origin/main", "origin/master", "uat", "origin/uat"):
+                print(f"[!] Notice: Baseline '{args.baseline}' could not be read ({e}). Proceeding without baseline comparison.")
+                baseline_zip = None
+            else:
+                raise RuntimeError(f"Requested baseline could not be read: {e}") from e
 
     # Execute scan
     scan_result = None
@@ -273,7 +288,12 @@ def main():
             print(f"[*] Connecting to AppScan server at {server_url}...")
             scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage})
         except Exception as exc:
-            raise RuntimeError("Server scan failed. No local fallback was performed; use --offline explicitly for a local scan.") from exc
+            if args.fallback_offline:
+                print(f"[!] Notice: Server scan failed at {server_url} ({exc}).")
+                print("[*] Falling back to local offline scan engine...")
+                scan_result = None
+            else:
+                raise RuntimeError(f"Server scan failed ({server_url}): {exc}. Use --offline or --fallback-offline for local analysis.") from exc
 
     if scan_result is None:
         sys.path.insert(0, str(appscan_dir.parent))
@@ -283,7 +303,9 @@ def main():
                                       {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision})
 
     # Save output artifacts
-    out_dir = git_root / args.output_dir
+    out_dir = Path(args.output_dir)
+    if not out_dir.is_absolute():
+        out_dir = git_root / out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "report.json").write_text(json.dumps(scan_result, indent=2), encoding="utf-8")
     if "package_xml" in scan_result:
