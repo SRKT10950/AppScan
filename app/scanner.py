@@ -54,7 +54,8 @@ def read_zip(encoded):
                 raise ValueError('Archive exceeds 10,000 entries.')
             for info in entries:
                 p = PurePosixPath(info.filename)
-                if p.is_absolute() or '..' in p.parts or '\\' in info.filename or ':' in info.filename:
+                orig = getattr(info, 'orig_filename', '') or ''
+                if p.is_absolute() or '..' in p.parts or '\\' in info.filename or '\\' in orig or ':' in info.filename or ':' in orig:
                     raise ValueError('Unsafe archive path.')
                 if stat.S_ISLNK(info.external_attr >> 16):
                     raise ValueError('Archive symlinks are not allowed.')
@@ -204,9 +205,11 @@ def parse_pmd(report, source):
 
 
 def find_pmd_binary():
-    env_bin = os.environ.get('PMD_BIN')
-    if env_bin and Path(env_bin).is_file():
-        return env_bin
+    if 'PMD_BIN' in os.environ:
+        env_bin = os.environ.get('PMD_BIN', '').strip()
+        if env_bin and Path(env_bin).is_file():
+            return env_bin
+        return None
     candidates = [
         Path(__file__).resolve().parent.parent / 'pmd' / 'bin' / 'pmd.bat',
         Path(__file__).resolve().parent.parent / 'pmd' / 'bin' / 'pmd',

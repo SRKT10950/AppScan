@@ -18,7 +18,9 @@ def archive(files):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
         for name, content in files.items():
-            z.writestr(name, content)
+            info = zipfile.ZipInfo()
+            info.filename = name
+            z.writestr(info, content)
     return base64.b64encode(buf.getvalue()).decode()
 
 
