@@ -277,7 +277,7 @@ def run_cpd(files):
         try:
             with output.open('wb') as stream:
                 proc = subprocess.run([binary, 'cpd', '--minimum-tokens', '100', '--language', 'apex', '--dir', str(source), '--format', 'xml'],
-                                      stdout=stream, stderr=subprocess.DEVNULL, timeout=180, check=False)
+                                      stdout=stream, stderr=subprocess.DEVNULL, timeout=180, check=False, shell=(os.name == 'nt'))
             if proc.returncode not in {0, 4}:
                 raise ValueError('CPD failed')
             root = ET.parse(output).getroot()

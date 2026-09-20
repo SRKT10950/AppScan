@@ -199,7 +199,9 @@ async function openScan(id) {
       pill.textContent = selected.status;
       pill.className = 'badge';
     }
-    notice(selected.status === 'failed' ? selected.result.error : 'Analysis ' + selected.status + ' · results refresh automatically.');
+    notice(selected.status === 'failed' ? (selected.result?.error || 'Scan failed.') : 'Analysis ' + selected.status + ' · results refresh automatically.');
+    window.location.hash = '#overview';
+    setRoute('#overview');
     return;
   }
 
@@ -221,6 +223,15 @@ async function openScan(id) {
   $('report-meta').textContent = `${new Date(selected.created).toLocaleString()} · ${r.files} files · ${r.comparison === 'baseline' ? 'Baseline comparison' : 'Full inventory'}`;
   $('warnings').replaceChildren(...r.warnings.map(w => el('p', w)));
   renderQualitySummary(r);
+
+  // Reset tab to findings view
+  for (const button of document.querySelectorAll('[data-tab]')) {
+    const isFindings = button.dataset.tab === 'findings';
+    button.classList.toggle('selected', isFindings);
+    const view = $(button.dataset.tab + '-view');
+    if (view) view.hidden = !isFindings;
+  }
+
   renderFindings();
   $('changes').replaceChildren();
   for (const c of r.changes) {

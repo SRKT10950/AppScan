@@ -61,7 +61,7 @@ async function loadPlatform() {
   }
   renderPolicy();
   renderRules();
-  await loadTokens();
+  try { await loadTokens(); } catch {}
   if (currentUser.role === 'admin') await loadAdmin();
   await loadIssues();
   updateContextLabels();
@@ -71,13 +71,19 @@ async function loadProjects() {
   const old = $('project-select').value;
   projectList = await jsonAPI('/api/projects');
   $('project-select').replaceChildren(new Option('All projects', ''));
+  const tokenSelect = $('token-project');
+  if (tokenSelect) tokenSelect.replaceChildren();
   for (const p of projectList) {
     $('project-select').append(new Option(p.name, p.id));
+    if (tokenSelect) tokenSelect.append(new Option(p.name, p.id));
   }
   if (projectList.some(p => p.id === old)) {
     $('project-select').value = old;
   } else if (projectList.length === 1) {
     $('project-select').value = projectList[0].id;
+  }
+  if (tokenSelect && $('project-select').value) {
+    tokenSelect.value = $('project-select').value;
   }
   renderPolicy();
   updateContextLabels();
@@ -86,6 +92,8 @@ async function loadProjects() {
 async function projectChanged() {
   const p = selectedProject();
   if (p) $('project').value = p.name;
+  const tokenSelect = $('token-project');
+  if (tokenSelect && p) tokenSelect.value = p.id;
   updateContextLabels();
   renderPolicy();
   await refresh();
@@ -111,7 +119,21 @@ $('create-project').onsubmit = runUI(async () => {
 function renderPolicy() {
   const p = selectedProject();
   $('policy-fields').disabled = !p || currentUser?.role !== 'admin';
-  if (!p) return;
+  if (!p) {
+    $('policy-scope').value = 'overall';
+    $('policy-blockers').value = '0';
+    $('policy-coverage').value = '';
+    $('policy-duplication').value = '';
+    $('policy-source').checked = false;
+    $('policy-cpd').checked = false;
+    $('policy-hotspots').checked = false;
+    $('policy-disabled').value = '';
+    $('policy-overrides').value = '{}';
+    $('policy-exclusions').value = '';
+    $('policy-members').value = '';
+    for (const box of document.querySelectorAll('.category')) box.checked = false;
+    return;
+  }
   const s = p.settings;
   $('policy-scope').value = s.scope;
   $('policy-blockers').value = s.max_blockers;
@@ -305,10 +327,10 @@ $('rule-search').oninput = renderRules;
 $('close-rule').onclick = () => $('rule-dialog').close();
 
 $('token-form').onsubmit = runUI(async () => {
-  const p = selectedProject();
-  if (!p) throw new Error('Select a project first.');
+  const pid = $('token-project')?.value || selectedProject()?.id;
+  if (!pid) throw new Error('Select a project first.');
   const r = await jsonAPI('/api/tokens', {
-    project_id: p.id,
+    project_id: pid,
     name: $('token-name').value,
     scope: $('token-scope').value,
     days: Number($('token-days').value)

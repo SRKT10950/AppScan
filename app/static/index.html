@@ -418,6 +418,9 @@
           <label>Token name
             <input id="token-name" required value="CI scanner">
           </label>
+          <label>Target project
+            <select id="token-project" required></select>
+          </label>
           <label>Permission
             <select id="token-scope">
               <option value="read">Read reports</option>
@@ -428,7 +431,7 @@
             <input id="token-days" type="number" min="1" max="365" value="30">
           </label>
           <div>
-            <button type="submit">Create token for selected project</button>
+            <button type="submit">Create API token</button>
           </div>
         </form>
         <pre id="new-token" hidden></pre>

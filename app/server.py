@@ -172,8 +172,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, {'status': 'ready'})
         # Canonical trailing slash is needed for relative assets behind a proxy.
         if urllib.parse.urlsplit(self.path).path == '/appscan':
+            query = urllib.parse.urlsplit(self.path).query
             self.send_response(308)
-            self.send_header('Location', '/appscan/')
+            self.send_header('Location', '/appscan/' + ('?' + query if query else ''))
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
@@ -217,12 +218,15 @@ class Handler(BaseHTTPRequestHandler):
                 rows = db.execute(sql, params).fetchall()
             for r in rows:
                 report = json.loads(r.pop('result') or '{}')
-                r.update(gate=report.get('gate'), count=len(report.get('findings', [])), metrics=report.get('metrics', {}), coverage=report.get('coverage'), duplication=report.get('duplication'))
+                r.update(gate=report.get('gate'), count=len(report.get('findings', [])), metrics=report.get('metrics') or {}, coverage=report.get('coverage'), duplication=report.get('duplication'))
                 # Keep summaries small; per-file metrics remain in the scan report.
-                r['metrics'].pop('file_metrics', None)
+                if isinstance(r.get('metrics'), dict):
+                    r['metrics'].pop('file_metrics', None)
             return self.send(200, rows)
         if path == '/api/issues':
-            platform.project_for(self.user, q.get('project_id', ''))
+            if not q.get('project_id'):
+                raise ValueError('project_id query parameter is required.')
+            platform.project_for(self.user, q['project_id'])
             sql = 'SELECT * FROM issues WHERE project_id=?'
             params = [q['project_id']]
             for key in ('branch', 'status', 'assignee'):
