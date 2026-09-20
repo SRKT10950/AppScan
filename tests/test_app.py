@@ -11,7 +11,7 @@ from unittest.mock import patch
 import urllib.request
 import urllib.error
 import zipfile
-from app import scanner, server
+from app import scanner, server, db
 
 
 def archive(files):
@@ -101,7 +101,8 @@ class APITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        server.DATA = Path(cls.tmp.name)
+        cls.old_data = db.DATA_DIR
+        db.DATA_DIR = Path(cls.tmp.name)
         server.PASSWORD = 'integration-password-1234'
         server.initialize()
         cls.http = server.Server(('127.0.0.1', 0), server.Handler)
@@ -113,6 +114,7 @@ class APITests(unittest.TestCase):
         cls.http.shutdown()
         cls.http.server_close()
         cls.tmp.cleanup()
+        db.DATA_DIR = cls.old_data
 
     def request(self, path, data=None, auth=True):
         headers = {'Content-Type': 'application/json'}
@@ -137,7 +139,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(record['result']['gate'], 'FAIL')
         report = self.request('/api/scans/' + started['id'] + '/report.zip').read()
         with zipfile.ZipFile(io.BytesIO(report)) as z:
-            self.assertEqual(set(z.namelist()), {'report.json','report.md','package.xml','destructiveChanges.xml'})
+            self.assertEqual(set(z.namelist()), {'report.json','report.md','report.sarif','package.xml','destructiveChanges.xml'})
         self.assertTrue(json.load(self.request('/api/scans')))
 
     def test_invalid_payload(self):

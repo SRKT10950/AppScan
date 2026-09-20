@@ -26,7 +26,7 @@ SALESFORCE_EXTENSIONS = {
     ".standardValueSet", ".resource", ".field", ".validationRule",
     ".recordType", ".listView", ".fieldSet", ".compactLayout",
     ".webLink", ".businessProcess", ".sharingReason", ".xml",
-    ".js", ".html", ".css"
+    ".js", ".html", ".css", ".object"
 }
 
 IGNORE_DIRS = {
@@ -69,15 +69,18 @@ def filter_zip_entries(zip_bytes: bytes) -> bytes:
             if not any(info.filename.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
                 continue
             if info.file_size > MAX_FILE_SIZE:
-                continue
+                raise ValueError("Archive contains a file larger than 2 MiB; refusing a partial scan.")
             if total_size + info.file_size > MAX_TOTAL_SIZE:
-                break
+                raise ValueError("Archive is too large; refusing a partial scan.")
             total_size += info.file_size
             dst.writestr(info, src.read(info.filename))
     return buf.getvalue()
 
 def create_archive_from_git_ref(ref: str, cwd: Path, subpath: str | None = None) -> bytes:
-    cmd = ["git", "archive", "--format=zip", ref]
+    resolved = subprocess.run(["git", "rev-parse", "--verify", "--end-of-options", ref + "^{commit}"], cwd=cwd, capture_output=True, text=True, check=False)
+    if resolved.returncode:
+        raise ValueError("Baseline or HEAD is not a valid commit.")
+    cmd = ["git", "archive", "--format=zip", resolved.stdout.strip(), "--"]
     if subpath:
         cmd.append(subpath)
     proc = subprocess.run(cmd, cwd=cwd, capture_output=True, check=False)
@@ -87,12 +90,14 @@ def create_archive_from_git_ref(ref: str, cwd: Path, subpath: str | None = None)
     return filter_zip_entries(proc.stdout)
 
 def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> bytes:
-    target_dir = cwd / subpath if subpath else cwd
+    target_dir = (cwd / subpath).resolve() if subpath else cwd.resolve()
+    if not target_dir.is_relative_to(cwd.resolve()):
+        raise ValueError("Scan path must remain inside the repository.")
     buf = io.BytesIO()
     total_size = 0
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for p in target_dir.rglob("*"):
-            if p.is_file():
+            if p.is_file() and not p.is_symlink():
                 rel = p.relative_to(cwd).as_posix()
                 if is_ignored(rel):
                     continue
@@ -100,14 +105,14 @@ def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> by
                     continue
                 size = p.stat().st_size
                 if size > MAX_FILE_SIZE:
-                    continue
+                    raise ValueError("Source file exceeds 2 MiB; refusing a partial scan.")
                 if total_size + size > MAX_TOTAL_SIZE:
-                    break
+                    raise ValueError("Source is too large; refusing a partial scan.")
                 total_size += size
                 z.write(p, rel)
     return buf.getvalue()
 
-def run_scan_via_api(server_url: str, user: str, password: str, project: str, current_zip: bytes, baseline_zip: bytes | None, api_version: str):
+def run_scan_via_api(server_url: str, user: str, password: str, project: str, current_zip: bytes, baseline_zip: bytes | None, api_version: str, context=None):
     headers = {
         "Content-Type": "application/json",
         "Authorization": "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode()
@@ -117,6 +122,9 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
         "current": base64.b64encode(current_zip).decode(),
         "api_version": api_version
     }
+    payload.update(context or {})
+    if os.environ.get("APPSCAN_TOKEN"):
+        headers["Authorization"] = "Bearer " + os.environ["APPSCAN_TOKEN"]
     if baseline_zip:
         payload["baseline"] = base64.b64encode(baseline_zip).decode()
 
@@ -125,7 +133,7 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
         started = json.loads(resp.read().decode())
     scan_id = started["id"]
 
-    for _ in range(60):
+    for _ in range(660):
         time.sleep(1)
         req = urllib.request.Request(f"{server_url.rstrip('/')}/api/scans/{scan_id}", headers=headers)
         with urllib.request.urlopen(req, timeout=15) as resp:
@@ -138,11 +146,15 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
             return data.get("result", {})
     raise TimeoutError("Scan timed out waiting for server completion.")
 
-def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str):
+def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str, coverage=None, context=None):
     from app import scanner
     current = scanner.read_zip(base64.b64encode(current_zip).decode())
     baseline = scanner.read_zip(base64.b64encode(baseline_zip).decode()) if baseline_zip else None
-    return scanner.scan(current, baseline, api_version)
+    from app.db import get_pg_config
+    if context and (get_pg_config() or os.environ.get("DATA_DIR")):
+        from app.persistence import direct_scan
+        return direct_scan(current, baseline, api_version, coverage, context)
+    return scanner.scan(current, baseline, api_version, coverage=coverage)
 
 def main():
     parser = argparse.ArgumentParser(description="AppScan Salesforce static code analyzer for VS Code")
@@ -154,7 +166,13 @@ def main():
     parser.add_argument("--api-version", default="64.0", help="Salesforce Metadata API version (default: 64.0)")
     parser.add_argument("--output-dir", "-o", default=".appscan", help="Directory to save scan report and manifests")
     parser.add_argument("--offline", action="store_true", help="Run scan directly without connecting to server")
+    parser.add_argument("--branch", default="main", help="Branch namespace for server history")
+    parser.add_argument("--pull-request", default="", help="Numeric PR identifier; isolated issue namespace")
+    parser.add_argument("--revision", default="", help="Commit SHA for traceability")
+    parser.add_argument("--coverage", help="LCOV or Salesforce/normalized JSON coverage report")
     args = parser.parse_args()
+    from app.coverage import parse_coverage
+    coverage = parse_coverage(Path(args.coverage).read_text()) if args.coverage else None
 
     git_root = get_git_root(Path.cwd())
     appscan_dir = Path(__file__).resolve().parent
@@ -162,9 +180,14 @@ def main():
     if not env_vars:
         env_vars = load_env_file(git_root / ".env")
 
+    # Operator-supplied DB settings also apply to explicit offline/direct persistence.
+    for key in ("DATABASE_URL", "POSTGRES_URL", "CENTRAL_PG_HOST", "CENTRAL_PG_PORT", "CENTRAL_PG_USER", "CENTRAL_PG_PASSWORD", "CENTRAL_PG_DATABASE", "DATA_DIR"):
+        if key in env_vars and key not in os.environ:
+            os.environ[key] = env_vars[key]
+
     server_url = args.server or os.environ.get("APPSCAN_URL") or env_vars.get("APPSCAN_URL") or "http://192.168.50.109:8089"
     user = os.environ.get("APPSCAN_USER") or env_vars.get("APPSCAN_USER", "admin")
-    password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD") or "AppScanSecretPass2026!"
+    password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD", "")
     project = args.project or git_root.name
 
     print(f"[*] AppScan Salesforce Code Analysis")
@@ -185,37 +208,23 @@ def main():
         try:
             baseline_zip = create_archive_from_git_ref(args.baseline, git_root, args.path)
         except Exception as e:
-            print(f"[!] Warning: Could not create baseline from '{args.baseline}': {e}", file=sys.stderr)
-            print("[!] Continuing without baseline comparison...", file=sys.stderr)
+            raise RuntimeError(f"Requested baseline could not be read: {e}") from e
 
     # Execute scan
     scan_result = None
     if not args.offline:
         try:
             print(f"[*] Connecting to AppScan server at {server_url}...")
-            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version)
+            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage})
         except Exception as exc:
-            print(f"[-] Server scan unavailable ({exc}). Falling back to local direct scanner...")
+            raise RuntimeError("Server scan failed. No local fallback was performed; use --offline explicitly for a local scan.") from exc
 
     if scan_result is None:
         sys.path.insert(0, str(appscan_dir.parent))
         sys.path.insert(0, str(appscan_dir))
         print("[*] Running scan via in-process engine...")
-        scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version)
-        # Record direct scan to DB if db module is available
-        try:
-            from app.db import get_db
-            import secrets
-            from datetime import datetime, timezone
-            direct_id = secrets.token_hex(16)
-            with get_db() as db_con:
-                db_con.execute(
-                    "INSERT INTO scans (id, project, created, status, result) VALUES (?, ?, ?, ?, ?)",
-                    (direct_id, project, datetime.now(timezone.utc).isoformat(), 'complete', json.dumps(scan_result))
-                )
-            print(f"[*] Scan saved to central database (ID: {direct_id})")
-        except Exception as db_err:
-            print(f"[-] Note: Direct scan not saved to central DB ({db_err})")
+        scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version, coverage,
+                                      {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision})
 
     # Save output artifacts
     out_dir = git_root / args.output_dir
@@ -225,6 +234,9 @@ def main():
         (out_dir / "package.xml").write_text(scan_result["package_xml"], encoding="utf-8")
     if "destructive_xml" in scan_result:
         (out_dir / "destructiveChanges.xml").write_text(scan_result["destructive_xml"], encoding="utf-8")
+
+    from app.quality import sarif
+    (out_dir / "report.sarif").write_text(json.dumps(sarif(scan_result), indent=2), encoding="utf-8")
 
     # Display findings in standard VS Code Problem Matcher format
     # Format: {path}:{line}:{col}: {severity}: [{rule}] {message}

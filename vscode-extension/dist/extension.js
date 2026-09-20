@@ -12,6 +12,16 @@ let statusBarItem;
 let latestScanResult = null;
 let latestProjectName = "Salesforce App";
 function activate(context) {
+    context.subscriptions.push(vscode.commands.registerCommand("appscan.setToken", async () => {
+        const serverUrl = vscode.workspace.getConfiguration("appscan").get("serverUrl", "http://localhost:8089");
+        const token = await vscode.window.showInputBox({ prompt: "AppScan project API token (blank clears it)", password: true, ignoreFocusOut: true });
+        if (token !== undefined) {
+            if (token)
+                await context.secrets.store("appscan.token:" + serverUrl, token);
+            else
+                await context.secrets.delete("appscan.token:" + serverUrl);
+        }
+    }));
     diagnosticCollection = vscode.languages.createDiagnosticCollection("appscan");
     context.subscriptions.push(diagnosticCollection);
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 90);
@@ -69,6 +79,10 @@ function activate(context) {
     }));
 }
 async function runScan(context, baseline, subpath) {
+    if (!vscode.workspace.isTrusted) {
+        vscode.window.showErrorMessage("Trust this workspace before running AppScan.");
+        return;
+    }
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
         vscode.window.showErrorMessage("AppScan requires an open workspace folder.");
@@ -97,7 +111,14 @@ async function runScan(context, baseline, subpath) {
         cancellable: false
     }, async (progress) => {
         progress.report({ message: `Comparing against baseline '${baseline || "none"}'...` });
-        const args = [cliPath, "--api-version", apiVersion, "--server", serverUrl];
+        const outputDir = path.join(".appscan", "run-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+        const args = [cliPath, "--api-version", apiVersion, "--server", serverUrl, "--output-dir", outputDir];
+        try {
+            const branch = (0, child_process_1.execFileSync)("git", ["branch", "--show-current"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
+            const revision = (0, child_process_1.execFileSync)("git", ["rev-parse", "HEAD"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
+            args.push("--branch", branch || "detached", "--revision", revision);
+        }
+        catch { /* Non-git workspaces still receive server analysis. */ }
         if (baseline) {
             args.push("--baseline", baseline);
         }
@@ -105,22 +126,28 @@ async function runScan(context, baseline, subpath) {
             args.push("--path", subpath);
         }
         try {
-            const result = await executePythonCli(args, workspaceRoot);
-            const reportFile = path.join(workspaceRoot, ".appscan", "report.json");
+            const credentials = {};
+            const token = await context.secrets.get("appscan.token:" + serverUrl);
+            if (token)
+                credentials.APPSCAN_TOKEN = token;
+            else {
+                credentials.APPSCAN_USER = config.get("username", "admin");
+                const password = config.get("password", "");
+                if (password)
+                    credentials.APPSCAN_PASSWORD = password;
+            }
+            await executePythonCli(args, workspaceRoot, credentials);
+            const reportFile = path.join(workspaceRoot, outputDir, "report.json");
             if (fs.existsSync(reportFile)) {
                 const raw = fs.readFileSync(reportFile, "utf-8");
                 latestScanResult = JSON.parse(raw);
             }
             else {
-                latestScanResult = {
-                    gate: "PASS",
-                    findings: [],
-                    changes: []
-                };
+                throw new Error("The scanner did not produce a report. No quality gate can be inferred.");
             }
             latestProjectName = path.basename(workspaceRoot);
             updateDiagnostics(workspaceRoot, latestScanResult.findings || []);
-            const gate = (latestScanResult.gate || "PASS").toUpperCase();
+            const gate = (latestScanResult.gate || "INCOMPLETE").toUpperCase();
             const findingsCount = (latestScanResult.findings || []).length;
             if (gate === "PASS") {
                 statusBarItem.text = `$(pass) AppScan: PASSED (${findingsCount})`;
@@ -149,10 +176,10 @@ async function runScan(context, baseline, subpath) {
         }
     });
 }
-function executePythonCli(args, cwd) {
+function executePythonCli(args, cwd, credentials) {
     return new Promise((resolve, reject) => {
         const pythonCmd = process.platform === "win32" ? "python" : "python3";
-        const env = { ...process.env };
+        const env = { ...process.env, ...credentials };
         if (!env.PMD_BIN && process.platform === "win32") {
             env.PMD_BIN = "D:\\Linux Server\\AppScan\\pmd\\bin\\pmd.bat";
         }

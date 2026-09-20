@@ -21,3 +21,9 @@ On-premises Salesforce code analysis, security linting, quality gates, and git b
 ## Requirements
 
 Requires Python 3.10+ installed on the host. AppScan backend runs on http://localhost:8089 or via Docker Compose.
+
+## Version 0.2
+
+Use **AppScan: Set Server API Token** to save a project-scoped server token in VS Code SecretStorage. Tokens are associated with the configured server URL. Branch and commit context is submitted to the central project. Server failures no longer silently run a different local policy; absent reports cannot appear as PASS. Local CLI scanning remains available explicitly through `--offline`.
+
+`npm run compile` synchronizes the root scanner/CLI into the extension before building. A trusted workspace is required to run the CLI. Each run writes to its own `.appscan/run-*` directory, avoiding stale report reuse. These directories can be removed when no longer needed.

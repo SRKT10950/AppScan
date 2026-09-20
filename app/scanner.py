@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
+from . import quality
 
 MAX_ZIP = 20 * 1024 * 1024
 MAX_EXPANDED = 100 * 1024 * 1024
@@ -221,7 +222,7 @@ def find_pmd_binary():
     return shutil.which('pmd') or shutil.which('pmd.bat')
 
 
-def run_pmd(files):
+def run_pmd(files, policy=None):
     apex = {p: b for p, b in files.items() if p.endswith(('.cls', '.trigger'))}
     if not apex:
         return [], [], 'not_applicable'
@@ -237,8 +238,11 @@ def run_pmd(files):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(raw)
         output = root / 'report.json'
+        ruleset = root / 'ruleset.xml'
+        categories = (policy or quality.DEFAULT_POLICY)['categories']
+        ruleset.write_text('<ruleset name="AppScan" xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"><description>Project quality profile</description>' + ''.join('<rule ref="category/apex/' + c + '.xml"/>' for c in categories) + '</ruleset>')
         try:
-            proc = subprocess.run([binary, 'check', '-d', str(source), '-R', str(Path(__file__).with_name('ruleset.xml')),
+            proc = subprocess.run([binary, 'check', '-d', str(source), '-R', str(ruleset),
                 '-f', 'json', '-r', str(output), '--no-cache', '--threads', '2'],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=False, shell=(os.name == 'nt'))
             if proc.returncode not in {0, 4}:
@@ -252,16 +256,73 @@ def run_pmd(files):
             return [], [{'message': 'PMD did not complete: ' + type(exc).__name__}], 'error'
 
 
-def scan(current, baseline, version):
+def run_cpd(files):
+    apex = {p: b for p, b in files.items() if p.endswith(('.cls', '.trigger'))}
+    if not apex:
+        return {'status': 'not_applicable', 'percent': None, 'groups': []}
+    binary = find_pmd_binary()
+    if not binary:
+        return {'status': 'error', 'percent': None, 'groups': []}
+    with tempfile.TemporaryDirectory(prefix='appscan-cpd-') as td:
+        source = Path(td) / 'source'
+        source.mkdir()
+        for path, data in apex.items():
+            target = source / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        output = Path(td) / 'cpd.xml'
+        try:
+            with output.open('wb') as stream:
+                proc = subprocess.run([binary, 'cpd', '--minimum-tokens', '100', '--language', 'apex', '--dir', str(source), '--format', 'xml'],
+                                      stdout=stream, stderr=subprocess.DEVNULL, timeout=180, check=False)
+            if proc.returncode not in {0, 4}:
+                raise ValueError('CPD failed')
+            root = ET.parse(output).getroot()
+            groups, duplicated = [], set()
+            for group in root.findall('{*}duplication'):
+                count = int(group.attrib['lines'])
+                locations = []
+                for file in group.findall('{*}file'):
+                    path = Path(file.attrib['path']).relative_to(source).as_posix()
+                    start = int(file.attrib['line'])
+                    locations.append({'path': path, 'line': start, 'lines': count})
+                    total_lines = len(apex[path].splitlines())
+                    duplicated.update((path, i) for i in range(start, min(start + count, total_lines + 1)))
+                groups.append({'tokens': int(group.attrib['tokens']), 'locations': locations})
+            total = sum(len(data.splitlines()) for data in apex.values())
+            return {'status': 'complete', 'percent': round(100 * len(duplicated) / total, 2) if total else 0,
+                    'duplicated_lines': len(duplicated), 'groups': groups, 'minimum_tokens': 100}
+        except (OSError, ValueError, KeyError, ET.ParseError, subprocess.TimeoutExpired):
+            return {'status': 'error', 'percent': None, 'groups': []}
+
+
+def scan(current, baseline, version, policy=None, coverage=None):
+    policy = quality.validate_policy(policy or {})
+    coverage_result = quality.coverage_metrics(coverage)
     rows, unsupported = changes(current, baseline)
     if not inventory(current)[0]:
         raise ValueError('No supported Salesforce components found in current ZIP.')
-    findings, errors = metadata_checks(current)
-    apex_findings, apex_errors, engine = run_pmd(current)
+    analysis_files = quality.filter_files(current, policy)
+    findings, errors = metadata_checks(analysis_files)
+    apex_findings, apex_errors, engine = run_pmd(analysis_files, policy)
     findings += apex_findings
     errors += apex_errors
     rank = {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}
     findings.sort(key=lambda x: (rank[x['severity']], x['path'], x['line']))
+    findings = quality.enrich(findings, analysis_files, policy)
+    reference = 'first_scan_all_new'
+    if baseline is not None:
+        baseline_files = quality.filter_files(baseline, policy)
+        base_findings, base_errors = metadata_checks(baseline_files)
+        base_apex, base_apex_errors, _ = run_pmd(baseline_files, policy)
+        errors += [{'message': 'Baseline analysis incomplete: ' + e.get('message', 'engine error')} for e in base_errors + base_apex_errors]
+        previous = {f['fingerprint'] for f in quality.enrich(base_findings + base_apex, baseline_files, policy)}
+        for f in findings:
+            f['is_new'] = f['fingerprint'] not in previous
+        reference = 'uploaded_baseline'
+    duplication = run_cpd(analysis_files) if policy['cpd'] else {'status': 'disabled', 'percent': None, 'groups': []}
+    if duplication['status'] == 'error':
+        errors.append({'message': 'Requested Apex duplication analysis failed.'})
     incomplete = bool(errors)
     gate = 'INCOMPLETE' if incomplete else 'FAIL' if any(f['severity'] in {'Critical', 'High'} for f in findings) else 'PASS'
     warnings = []
@@ -270,7 +331,16 @@ def scan(current, baseline, version):
     if unsupported:
         warnings.append('Some files have no supported metadata mapping. Manifests are partial; review unsupported files.')
     warnings.append('Manifests require deployment review and org validation. They do not contain source payloads or resolve dependencies.')
-    return dict(gate=gate, pmd=engine, findings=findings, errors=errors, changes=rows, unsupported=unsupported,
+    result = dict(gate=gate, pmd=engine, findings=findings, errors=errors, changes=rows, unsupported=unsupported,
         warnings=warnings, files=len(current), components=len(inventory(current)[0]),
         comparison='baseline' if baseline is not None else 'inventory', api_version=version,
         package_xml=manifest(rows, False, version), destructive_xml=manifest(rows, True, version))
+
+    result.update(metrics=quality.code_metrics(analysis_files), coverage=coverage_result, duplication=duplication,
+                  new_code_reference=reference, policy=policy)
+    result['metrics']['new_findings'] = sum(f['is_new'] for f in findings)
+    result['quality_gate'] = quality.evaluate(result, policy)
+    result['gate'] = result['quality_gate']['gate']
+    if len(analysis_files) != len(current):
+        result['warnings'].append('Analysis exclusions were applied; metadata manifests still include all supported components.')
+    return result

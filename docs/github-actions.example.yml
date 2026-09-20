@@ -1,0 +1,52 @@
+# Copy into the Salesforce repository only after configuring a protected runner.
+# Do not run untrusted forks on a private-network self-hosted runner.
+name: AppScan
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+  checks: write
+jobs:
+  scan:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - name: Scan exact commit
+        id: analysis
+        continue-on-error: true
+        env:
+          APPSCAN_TOKEN: ${{ secrets.APPSCAN_TOKEN }}
+          APPSCAN_URL: ${{ vars.APPSCAN_URL }}
+          SCAN_BRANCH: ${{ github.head_ref || github.ref_name }}
+          SCAN_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          SCAN_PR: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PROJECT: ${{ vars.APPSCAN_PROJECT }}
+        run: |
+          rm -f .appscan/report.json .appscan/report.sarif
+          args=(--use-head --project "$PROJECT" --branch "$SCAN_BRANCH" --revision "$SCAN_SHA")
+          if [ -n "$SCAN_PR" ]; then args+=(--pull-request "$SCAN_PR" --baseline "$BASE_SHA"); fi
+          python3 /opt/appscan/cli.py "${args[@]}"
+        shell: bash
+      - name: Decorate exact commit
+        if: always() && hashFiles('.appscan/report.json') != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SCAN_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 /opt/appscan/scripts/github_check.py --report .appscan/report.json --sha "$SCAN_SHA"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: appscan-results
+          path: .appscan/
+      - name: Enforce scan success and gate
+        if: always()
+        env:
+          SCAN_OUTCOME: ${{ steps.analysis.outcome }}
+        run: test "$SCAN_OUTCOME" = success
