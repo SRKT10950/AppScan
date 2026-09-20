@@ -1,4 +1,4 @@
-﻿import * as vscode from "vscode";
+import * as vscode from "vscode";
 
 export class ReportPanel {
   public static currentPanel: ReportPanel | undefined;
@@ -62,11 +62,50 @@ export class ReportPanel {
     const changes = scan.changes || [];
     const warnings = scan.warnings || [];
     const errors = scan.errors || [];
+    const qg = scan.quality_gate || {};
+    const conditions: any[] = qg.conditions || [];
+    const coverage = scan.coverage || null;
+    const coveragePercent = coverage && typeof coverage.percent === "number" ? coverage.percent : null;
+    const missingCoverage = conditions.some((c: any) => c.metric === "min_coverage" && c.status === "MISSING");
 
     const criticalCount = findings.filter((f: any) => f.severity === "Critical").length;
     const highCount = findings.filter((f: any) => f.severity === "High").length;
     const medCount = findings.filter((f: any) => f.severity === "Medium").length;
     const lowCount = findings.filter((f: any) => f.severity === "Low").length;
+
+    const metricNameMap: Record<string, string> = {
+      min_coverage: "Minimum Code Coverage",
+      overall_blockers: "Overall Blocker Findings (Critical/High)",
+      new_blockers: "New Blocker Findings (Critical/High)",
+      max_duplication: "Maximum Code Duplication",
+      unreviewed_hotspots: "Unreviewed Security Hotspots"
+    };
+
+    const formatLimit = (c: any): string => {
+      if (c.metric === "min_coverage") return `>= ${c.limit}%`;
+      if (c.metric === "max_duplication") return `<= ${c.limit}%`;
+      if (c.metric && c.metric.endsWith("_blockers")) return `<= ${c.limit}`;
+      if (c.metric === "unreviewed_hotspots") return "0";
+      return String(c.limit ?? "N/A");
+    };
+
+    const formatActual = (c: any): string => {
+      if (c.actual === null || c.actual === undefined) return "N/A (Missing)";
+      if (c.metric === "min_coverage" || c.metric === "max_duplication") return `${c.actual}%`;
+      return String(c.actual);
+    };
+
+    const conditionRows = conditions
+      .map(
+        (c: any) => `
+        <tr>
+          <td><strong>${metricNameMap[c.metric] || c.metric}</strong></td>
+          <td><code>${formatActual(c)}</code></td>
+          <td><code>${formatLimit(c)}</code></td>
+          <td><span class="badge ${c.status.toLowerCase()}">${c.status}</span></td>
+        </tr>`
+      )
+      .join("");
 
     const findingsRows = findings
       .map(
@@ -128,7 +167,7 @@ export class ReportPanel {
 
         .metrics-grid {
           display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
           gap: 16px;
           margin-bottom: 24px;
         }
@@ -141,6 +180,28 @@ export class ReportPanel {
         }
         .metric-num { font-size: 2rem; font-weight: 700; margin-top: 4px; }
         .metric-label { font-size: 0.75rem; color: var(--vscode-descriptionForeground); text-transform: uppercase; }
+
+        .alert-box {
+          padding: 14px 18px;
+          border-radius: 6px;
+          margin-bottom: 24px;
+          font-size: 0.9rem;
+          line-height: 1.5;
+        }
+        .alert-warning {
+          background-color: rgba(234, 179, 8, 0.12);
+          border: 1px solid rgba(234, 179, 8, 0.45);
+          color: var(--vscode-foreground);
+        }
+        .alert-error {
+          background-color: rgba(239, 68, 68, 0.12);
+          border: 1px solid rgba(239, 68, 68, 0.45);
+          color: var(--vscode-foreground);
+        }
+        .alert-box strong {
+          display: block;
+          margin-bottom: 4px;
+        }
 
         table {
           width: 100%;
@@ -167,9 +228,10 @@ export class ReportPanel {
           font-size: 0.75rem;
           font-weight: 600;
         }
-        .badge.Critical, .badge.High { background: #ef444433; color: #f87171; }
-        .badge.Medium { background: #eab30833; color: #facc15; }
+        .badge.Critical, .badge.High, .badge.fail { background: #ef444433; color: #f87171; }
+        .badge.Medium, .badge.missing { background: #eab30833; color: #facc15; }
         .badge.Low { background: #3b82f633; color: #60a5fa; }
+        .badge.pass { background: #22c55e33; color: #4ade80; }
 
         .status-tag {
           display: inline-block;
@@ -200,6 +262,40 @@ export class ReportPanel {
         <div class="gate-banner ${gateClass}">Gate: ${gate}</div>
       </div>
 
+      ${
+        missingCoverage
+          ? `<div class="alert-box alert-warning">
+              <strong>⚠️ Quality Gate Incomplete: Missing Code Coverage</strong>
+              This project requires code coverage to pass the Quality Gate, but coverage was not provided in this scan.
+              <br>
+              To run selective Apex test classes for modified code:
+              use command <code>AppScan: Run Selective Tests & Scan Workspace</code> or pass <code>--run-tests</code> to the CLI.
+            </div>`
+          : ""
+      }
+
+      ${
+        errors.length > 0
+          ? `<div class="alert-box alert-error">
+              <strong>Errors:</strong>
+              <ul style="margin: 4px 0 0 16px; padding: 0;">
+                ${errors.map((e: string) => `<li>${e}</li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+      }
+
+      ${
+        warnings.length > 0
+          ? `<div class="alert-box alert-warning">
+              <strong>Warnings:</strong>
+              <ul style="margin: 4px 0 0 16px; padding: 0;">
+                ${warnings.map((w: string) => `<li>${w}</li>`).join("")}
+              </ul>
+            </div>`
+          : ""
+      }
+
       <div class="metrics-grid">
         <div class="metric-card">
           <div class="metric-label">Critical</div>
@@ -218,10 +314,35 @@ export class ReportPanel {
           <div class="metric-num" style="color: #60a5fa;">${lowCount}</div>
         </div>
         <div class="metric-card">
+          <div class="metric-label">Coverage</div>
+          <div class="metric-num" style="color: ${coveragePercent === null ? '#facc15' : coveragePercent >= 75 ? '#4ade80' : '#f87171'}; ${coveragePercent === null ? 'font-size: 1.15rem; padding-top: 6px;' : ''}">
+            ${coveragePercent === null ? 'MISSING' : `${coveragePercent}%`}
+          </div>
+        </div>
+        <div class="metric-card">
           <div class="metric-label">Metadata Changes</div>
           <div class="metric-num" style="color: #a78bfa;">${changes.length}</div>
         </div>
       </div>
+
+      ${
+        conditions.length > 0
+          ? `<h2>Quality Gate Conditions (${conditions.length})</h2>
+             <table>
+               <thead>
+                 <tr>
+                   <th>Policy Condition</th>
+                   <th>Actual Value</th>
+                   <th>Required Limit</th>
+                   <th>Status</th>
+                 </tr>
+               </thead>
+               <tbody>
+                 ${conditionRows}
+               </tbody>
+             </table>`
+          : ""
+      }
 
       <h2>Findings (${findings.length})</h2>
       ${

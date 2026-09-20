@@ -37,6 +37,20 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   context.subscriptions.push(
+    vscode.commands.registerCommand("appscan.scanWithTests", async () => {
+      const config = vscode.workspace.getConfiguration("appscan");
+      const defaultBaseline = config.get<string>("defaultBaseline", "main");
+      await runScan(context, defaultBaseline, undefined, true);
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("appscan.mapTestClasses", async () => {
+      await mapTestClasses(context);
+    })
+  );
+
+  context.subscriptions.push(
     vscode.commands.registerCommand("appscan.scanWithCustomBaseline", async () => {
       const config = vscode.workspace.getConfiguration("appscan");
       const defaultBaseline = config.get<string>("defaultBaseline", "main");
@@ -96,7 +110,12 @@ export function activate(context: vscode.ExtensionContext) {
   );
 }
 
-async function runScan(context: vscode.ExtensionContext, baseline?: string, subpath?: string) {
+async function runScan(
+  context: vscode.ExtensionContext,
+  baseline?: string,
+  subpath?: string,
+  forceRunTests: boolean = false
+) {
   if (!vscode.workspace.isTrusted) {
     vscode.window.showErrorMessage("Trust this workspace before running AppScan.");
     return;
@@ -150,6 +169,19 @@ async function runScan(context: vscode.ExtensionContext, baseline?: string, subp
         args.push("--path", subpath);
       }
 
+      const shouldRunTests = forceRunTests || config.get<boolean>("runSelectiveTests", false);
+      if (shouldRunTests) {
+        args.push("--run-tests");
+      }
+      const testMapping = config.get<string>("testMappingPath", "");
+      if (testMapping) {
+        args.push("--test-mapping", testMapping);
+      }
+      const targetOrg = config.get<string>("targetOrg", "");
+      if (targetOrg) {
+        args.push("--target-org", targetOrg);
+      }
+
       try {
         const credentials: NodeJS.ProcessEnv = {};
         const token = await context.secrets.get("appscan.token:" + serverUrl);
@@ -174,6 +206,8 @@ async function runScan(context: vscode.ExtensionContext, baseline?: string, subp
 
         const gate = (latestScanResult.gate || "INCOMPLETE").toUpperCase();
         const findingsCount = (latestScanResult.findings || []).length;
+        const conditions = latestScanResult.quality_gate?.conditions || [];
+        const missingCoverage = conditions.some((c: any) => c.metric === "min_coverage" && c.status === "MISSING");
 
         if (gate === "PASS") {
           statusBarItem.text = `$(pass) AppScan: PASSED (${findingsCount})`;
@@ -181,6 +215,21 @@ async function runScan(context: vscode.ExtensionContext, baseline?: string, subp
             .showInformationMessage(`AppScan Passed! Quality gate is clean. (${findingsCount} findings)`, "View Report")
             .then((selection) => {
               if (selection === "View Report") {
+                ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
+              }
+            });
+        } else if (gate === "INCOMPLETE" && missingCoverage) {
+          statusBarItem.text = `$(warning) AppScan: INCOMPLETE (Missing Coverage)`;
+          vscode.window
+            .showWarningMessage(
+              `AppScan Quality Gate: INCOMPLETE due to missing Code Coverage. Run selective Apex tests to satisfy quality gate.`,
+              "Run Selective Tests & Scan",
+              "View Report"
+            )
+            .then(async (selection) => {
+              if (selection === "Run Selective Tests & Scan") {
+                await runScan(context, baseline, subpath, true);
+              } else if (selection === "View Report") {
                 ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
               }
             });
@@ -200,6 +249,66 @@ async function runScan(context: vscode.ExtensionContext, baseline?: string, subp
       } catch (err: any) {
         statusBarItem.text = "$(error) AppScan: Error";
         vscode.window.showErrorMessage(`AppScan failed: ${err.message || err}`);
+      }
+    }
+  );
+}
+
+async function mapTestClasses(context: vscode.ExtensionContext) {
+  if (!vscode.workspace.isTrusted) {
+    vscode.window.showErrorMessage("Trust this workspace before running AppScan.");
+    return;
+  }
+  const workspaceFolders = vscode.workspace.workspaceFolders;
+  if (!workspaceFolders || workspaceFolders.length === 0) {
+    vscode.window.showErrorMessage("AppScan requires an open workspace folder.");
+    return;
+  }
+
+  const workspaceRoot = workspaceFolders[0].uri.fsPath;
+  const config = vscode.workspace.getConfiguration("appscan");
+
+  let cliPath = path.join(context.extensionPath, "python", "cli.py");
+  if (!fs.existsSync(cliPath)) {
+    cliPath = path.join(workspaceRoot, "AppScan", "cli.py");
+  }
+  if (!fs.existsSync(cliPath)) {
+    cliPath = path.join(workspaceRoot, "cli.py");
+  }
+  if (!fs.existsSync(cliPath)) {
+    vscode.window.showErrorMessage(`AppScan CLI runner not found. Checked: ${cliPath}`);
+    return;
+  }
+
+  const args: string[] = [cliPath, "--map-tests"];
+  const testMapping = config.get<string>("testMappingPath", "");
+  if (testMapping) {
+    args.push("--test-mapping", testMapping);
+  }
+
+  await vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "AppScan: Detecting and mapping Apex test classes...",
+      cancellable: false
+    },
+    async () => {
+      try {
+        await executePythonCli(args, workspaceRoot, {});
+        const mapFile = path.join(workspaceRoot, testMapping || ".appscan/test-mapping.json");
+        vscode.window
+          .showInformationMessage(
+            "AppScan: Apex test class mappings successfully updated.",
+            "Open Mapping File"
+          )
+          .then(async (selection) => {
+            if (selection === "Open Mapping File" && fs.existsSync(mapFile)) {
+              const doc = await vscode.workspace.openTextDocument(mapFile);
+              await vscode.window.showTextDocument(doc);
+            }
+          });
+      } catch (err: any) {
+        vscode.window.showErrorMessage(`Failed to map test classes: ${err.message || err}`);
       }
     }
   );

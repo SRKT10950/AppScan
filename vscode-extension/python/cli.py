@@ -156,6 +156,27 @@ def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version:
         return direct_scan(current, baseline, api_version, coverage, context)
     return scanner.scan(current, baseline, api_version, coverage=coverage)
 
+def get_modified_classes(git_root: Path, baseline: str | None, subpath: str | None = None) -> list[str]:
+    """Find Apex classes modified or added relative to baseline or uncommitted changes."""
+    modified = set()
+    if baseline:
+        cmd = ["git", "diff", "--name-only", baseline]
+        if subpath:
+            cmd.extend(["--", subpath])
+        proc = subprocess.run(cmd, cwd=git_root, capture_output=True, text=True, check=False)
+        if proc.returncode == 0:
+            for line in proc.stdout.splitlines():
+                if line.endswith(".cls"):
+                    modified.add(Path(line).stem)
+    # Also check uncommitted working directory changes
+    proc = subprocess.run(["git", "status", "--porcelain"], cwd=git_root, capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        for line in proc.stdout.splitlines():
+            filepath = line[3:].strip()
+            if filepath.endswith(".cls"):
+                modified.add(Path(filepath).stem)
+    return sorted(list(modified))
+
 def main():
     parser = argparse.ArgumentParser(description="AppScan Salesforce static code analyzer for VS Code")
     parser.add_argument("--baseline", "-b", help="Git branch, tag, or commit hash to use as baseline (e.g. main, uat, HEAD~1)")
@@ -170,12 +191,47 @@ def main():
     parser.add_argument("--pull-request", default="", help="Numeric PR identifier; isolated issue namespace")
     parser.add_argument("--revision", default="", help="Commit SHA for traceability")
     parser.add_argument("--coverage", help="LCOV or Salesforce/normalized JSON coverage report")
+    parser.add_argument("--run-tests", "-t", action="store_true", help="Run selective test classes for modified Apex classes via Salesforce CLI")
+    parser.add_argument("--test-mapping", help="Path to class-to-test mapping JSON file (default: .appscan/test-mapping.json)")
+    parser.add_argument("--map-tests", action="store_true", help="Discover and map test classes across workspace into test-mapping.json without scanning")
+    parser.add_argument("--target-org", help="Target Salesforce org username/alias for test execution")
     args = parser.parse_args()
-    from app.coverage import parse_coverage
-    coverage = parse_coverage(Path(args.coverage).read_text()) if args.coverage else None
 
     git_root = get_git_root(Path.cwd())
     appscan_dir = Path(__file__).resolve().parent
+
+    if args.map_tests:
+        from app.test_runner import scan_workspace_classes, detect_test_classes_for, load_mapping, save_mapping
+        mapping_file = Path(args.test_mapping) if args.test_mapping else (git_root / ".appscan" / "test-mapping.json")
+        mapping = load_mapping(mapping_file)
+        source_cls, test_cls = scan_workspace_classes(git_root)
+        print(f"[*] Found {len(source_cls)} source classes and {len(test_cls)} test classes in workspace.")
+        for name, p in source_cls.items():
+            if name not in mapping:
+                detected = detect_test_classes_for(name, p, test_cls)
+                if detected:
+                    mapping[name] = detected
+                    print(f"  Mapped {name} -> {', '.join(detected)}")
+        save_mapping(mapping_file, mapping)
+        print(f"[*] Test mappings saved to {mapping_file}")
+        sys.exit(0)
+
+    from app.coverage import parse_coverage
+    coverage = parse_coverage(Path(args.coverage).read_text()) if args.coverage else None
+
+    if args.run_tests and not coverage:
+        from app.test_runner import resolve_tests_for_classes, run_selective_tests
+        modified_classes = get_modified_classes(git_root, args.baseline, args.path)
+        if not modified_classes:
+            target_dir = (git_root / args.path).resolve() if args.path else git_root
+            modified_classes = [p.stem for p in target_dir.rglob("*.cls") if not p.stem.endswith("Test") and not p.stem.endswith("Tests")]
+        print(f"[*] Target modified Apex classes for selective testing: {', '.join(modified_classes) if modified_classes else 'None detected'}")
+        mapping_file = Path(args.test_mapping) if args.test_mapping else (git_root / ".appscan" / "test-mapping.json")
+        test_classes, _ = resolve_tests_for_classes(modified_classes, git_root, mapping_file)
+        if test_classes:
+            coverage = run_selective_tests(test_classes, git_root, args.target_org, git_root / args.output_dir)
+        else:
+            print("[!] No matching test classes found to run.")
     env_vars = load_env_file(appscan_dir / ".env")
     if not env_vars:
         env_vars = load_env_file(git_root / ".env")
@@ -277,8 +333,30 @@ def main():
     print("\n" + "="*70)
     print(f" QUALITY GATE: {gate.upper()} (PMD: {scan_result.get('pmd', 'ok')})")
     print(f" Reports saved to: {out_dir.relative_to(git_root)}")
-    print("="*70 + "\n")
+    print("="*70)
 
+    # Print Gate conditions if present
+    conditions = scan_result.get("quality_gate", {}).get("conditions", [])
+    if conditions:
+        print("\nQuality Gate Conditions:")
+        for c in conditions:
+            status_icon = "✓" if c.get("status") == "PASS" else "✗"
+            print(f"  [{status_icon}] {c.get('metric')}: {c.get('actual') if c.get('actual') is not None else 'MISSING'} (limit: {c.get('limit')}) -> {c.get('status')}")
+
+    if gate.upper() == "INCOMPLETE":
+        missing_cov = any(c.get("metric") == "min_coverage" and c.get("status") == "MISSING" for c in conditions)
+        if missing_cov:
+            limit = next((c.get("limit") for c in conditions if c.get("metric") == "min_coverage"), 75)
+            print("\n" + "!"*70)
+            print(f" [!] GATE INCOMPLETE: Project policy requires minimum {limit}% code coverage,")
+            print("     but no coverage report was supplied.")
+            print("     Run selective tests for modified classes with:")
+            print("       python cli.py --run-tests")
+            print("     Or provide a coverage JSON file with:")
+            print("       python cli.py --coverage <file>")
+            print("!"*70 + "\n")
+
+    print()
     if gate.upper() in ("FAIL", "INCOMPLETE"):
         sys.exit(1)
     sys.exit(0)
