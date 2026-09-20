@@ -32,7 +32,8 @@ SALESFORCE_EXTENSIONS = {
 IGNORE_DIRS = {
     "node_modules", ".git", "dist", "build", "vendor",
     "__pycache__", ".pytest_cache", ".vscode", ".appscan",
-    "data", "venv", ".venv", "env", ".env"
+    "data", "venv", ".venv", "env", ".env", ".sf", ".sfdx",
+    "coverage", "target", "bin", "out", "tmp", "temp", "test-results"
 }
 
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MiB limit per file in AppScan
@@ -62,8 +63,9 @@ def is_ignored(path_str: str) -> bool:
     parts = path_str.replace("\\", "/").split("/")
     return any(p in IGNORE_DIRS or p.startswith(".") for p in parts[:-1])
 
-def filter_zip_entries(zip_bytes: bytes) -> bytes:
+def filter_zip_entries(zip_bytes: bytes) -> tuple[bytes, list[tuple[str, int]]]:
     buf = io.BytesIO()
+    skipped: list[tuple[str, int]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         total_size = 0
         for info in src.infolist():
@@ -72,14 +74,17 @@ def filter_zip_entries(zip_bytes: bytes) -> bytes:
             if not any(info.filename.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
                 continue
             if info.file_size > MAX_FILE_SIZE:
-                raise ValueError("Archive contains a file larger than 2 MiB; refusing a partial scan.")
+                print(f"[!] Warning: Skipping '{info.filename}' ({info.file_size / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
+                skipped.append((info.filename, info.file_size))
+                continue
             if total_size + info.file_size > MAX_TOTAL_SIZE:
-                raise ValueError("Archive is too large; refusing a partial scan.")
+                print(f"[!] Warning: Total archive size exceeds {MAX_TOTAL_SIZE // (1024 * 1024)} MiB. Skipping remaining files.")
+                break
             total_size += info.file_size
             dst.writestr(info, src.read(info.filename))
-    return buf.getvalue()
+    return buf.getvalue(), skipped
 
-def create_archive_from_git_ref(ref: str, cwd: Path, subpath: str | None = None) -> bytes:
+def create_archive_from_git_ref(ref: str, cwd: Path, subpath: str | None = None) -> tuple[bytes, list[tuple[str, int]]]:
     resolved = subprocess.run(["git", "rev-parse", "--verify", "--end-of-options", ref + "^{commit}"], cwd=cwd, capture_output=True, text=True, check=False)
     if resolved.returncode:
         raise ValueError("Baseline or HEAD is not a valid commit.")
@@ -92,28 +97,57 @@ def create_archive_from_git_ref(ref: str, cwd: Path, subpath: str | None = None)
         raise RuntimeError(f"Failed to create git archive from ref '{ref}': {err.strip()}")
     return filter_zip_entries(proc.stdout)
 
-def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> bytes:
+def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> tuple[bytes, list[tuple[str, int]]]:
     target_dir = (cwd / subpath).resolve() if subpath else cwd.resolve()
     if not target_dir.is_relative_to(cwd.resolve()):
         raise ValueError("Scan path must remain inside the repository.")
     buf = io.BytesIO()
     total_size = 0
+    skipped: list[tuple[str, int]] = []
+
+    candidate_files: list[Path] = []
+    try:
+        cmd = ["git", "ls-files", "-c", "-o", "--exclude-standard"]
+        if subpath:
+            cmd.extend(["--", subpath])
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
+        if proc.returncode == 0 and proc.stdout.strip():
+            for line in proc.stdout.splitlines():
+                line = line.strip()
+                if line:
+                    p = cwd / line
+                    if p.is_file() and not p.is_symlink():
+                        candidate_files.append(p)
+    except Exception:
+        pass
+
+    if not candidate_files:
+        candidate_files = [p for p in target_dir.rglob("*") if p.is_file() and not p.is_symlink()]
+
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for p in target_dir.rglob("*"):
-            if p.is_file() and not p.is_symlink():
+        for p in candidate_files:
+            try:
                 rel = p.relative_to(cwd).as_posix()
-                if is_ignored(rel):
-                    continue
-                if not any(p.name.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
-                    continue
+            except ValueError:
+                continue
+            if is_ignored(rel):
+                continue
+            if not any(p.name.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
+                continue
+            try:
                 size = p.stat().st_size
-                if size > MAX_FILE_SIZE:
-                    raise ValueError("Source file exceeds 2 MiB; refusing a partial scan.")
-                if total_size + size > MAX_TOTAL_SIZE:
-                    raise ValueError("Source is too large; refusing a partial scan.")
-                total_size += size
-                z.write(p, rel)
-    return buf.getvalue()
+            except OSError:
+                continue
+            if size > MAX_FILE_SIZE:
+                print(f"[!] Warning: Skipping '{rel}' ({size / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
+                skipped.append((rel, size))
+                continue
+            if total_size + size > MAX_TOTAL_SIZE:
+                print(f"[!] Warning: Total archive size exceeds {MAX_TOTAL_SIZE // (1024 * 1024)} MiB. Skipping remaining files.")
+                break
+            total_size += size
+            z.write(p, rel)
+    return buf.getvalue(), skipped
 
 def run_scan_via_api(server_url: str, user: str, password: str, project: str, current_zip: bytes, baseline_zip: bytes | None, api_version: str, context=None):
     headers = {
@@ -258,12 +292,15 @@ def main():
     print(f"[*] Project: {project} | API Version: {args.api_version}")
 
     # Build current archive
+    all_skipped: list[tuple[str, int]] = []
     if args.use_head:
         print("[*] Packaging current code from git HEAD...")
-        current_zip = create_archive_from_git_ref("HEAD", git_root, args.path)
+        current_zip, skipped = create_archive_from_git_ref("HEAD", git_root, args.path)
+        all_skipped.extend(skipped)
     else:
         print("[*] Packaging current working workspace files...")
-        current_zip = create_archive_from_working_dir(git_root, args.path)
+        current_zip, skipped = create_archive_from_working_dir(git_root, args.path)
+        all_skipped.extend(skipped)
 
     if not current_zip:
         raise RuntimeError("No Salesforce source files (.cls, .trigger, .xml, .js, .html, etc.) found in the target directory to scan.")
@@ -273,7 +310,8 @@ def main():
     if args.baseline:
         print(f"[*] Packaging baseline code from '{args.baseline}'...")
         try:
-            baseline_zip = create_archive_from_git_ref(args.baseline, git_root, args.path)
+            baseline_zip, base_skipped = create_archive_from_git_ref(args.baseline, git_root, args.path)
+            all_skipped.extend(base_skipped)
         except Exception as e:
             if args.baseline in ("main", "master", "origin/main", "origin/master", "uat", "origin/uat"):
                 print(f"[!] Notice: Baseline '{args.baseline}' could not be read ({e}). Proceeding without baseline comparison.")
@@ -301,6 +339,9 @@ def main():
         print("[*] Running scan via in-process engine...")
         scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version, coverage,
                                       {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision})
+
+    for item, sz in all_skipped:
+        scan_result.setdefault("warnings", []).append(f"Skipped file '{item}' ({sz / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
 
     # Save output artifacts
     out_dir = Path(args.output_dir)
