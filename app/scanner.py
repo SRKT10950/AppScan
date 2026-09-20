@@ -16,6 +16,7 @@ from . import quality
 MAX_ZIP = 20 * 1024 * 1024
 MAX_EXPANDED = 100 * 1024 * 1024
 MAX_FILE = 2 * 1024 * 1024
+MAX_ENTRIES = 100000
 NS = 'http://soap.sforce.com/2006/04/metadata'
 ET.register_namespace('', NS)
 SIMPLE = {
@@ -50,8 +51,8 @@ def read_zip(encoded):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as z:
             entries = z.infolist()
-            if len(entries) > 10000:
-                raise ValueError('Archive exceeds 10,000 entries.')
+            if len(entries) > MAX_ENTRIES:
+                raise ValueError(f'Archive exceeds {MAX_ENTRIES:,} entries.')
             for info in entries:
                 p = PurePosixPath(info.filename)
                 orig = getattr(info, 'orig_filename', '') or ''

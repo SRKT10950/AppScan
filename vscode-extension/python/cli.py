@@ -38,6 +38,7 @@ IGNORE_DIRS = {
 
 MAX_FILE_SIZE = 2 * 1024 * 1024  # 2 MiB limit per file in AppScan
 MAX_TOTAL_SIZE = 80 * 1024 * 1024  # 80 MiB total expanded limit
+MAX_ENTRIES = 100000
 
 def load_env_file(env_path: Path):
     if not env_path.is_file():
@@ -63,24 +64,50 @@ def is_ignored(path_str: str) -> bool:
     parts = path_str.replace("\\", "/").split("/")
     return any(p in IGNORE_DIRS or p.startswith(".") for p in parts[:-1])
 
+def is_salesforce_file(rel: str) -> bool:
+    parts = PurePosixPath(rel).parts
+    if any(p in IGNORE_DIRS or p.startswith(".") for p in parts[:-1]):
+        return False
+    ext = Path(rel).suffix
+    if ext not in SALESFORCE_EXTENSIONS:
+        return False
+    # If the file is generic web code (.js, .html, .css), only include if inside recognized Salesforce metadata/components
+    if ext in {".js", ".html", ".css"}:
+        return any(f in parts for f in {"lwc", "aura", "staticresources", "pages", "components"})
+    # If .xml, only include if standard Salesforce manifest or -meta.xml or inside recognized metadata folders
+    if ext == ".xml":
+        name = Path(rel).name
+        if name in {"package.xml", "destructiveChanges.xml", "destructiveChangesPre.xml", "destructiveChangesPost.xml"}:
+            return True
+        if name.endswith("-meta.xml"):
+            return True
+        return any(f in parts for f in {
+            'classes', 'triggers', 'pages', 'components', 'flows',
+            'permissionsets', 'profiles', 'layouts', 'tabs', 'applications',
+            'customMetadata', 'permissionsetgroups', 'flexipages', 'remoteSiteSettings',
+            'namedCredentials', 'externalCredentials', 'globalValueSets', 'standardValueSets',
+            'objects', 'labels', 'customPermissions', 'sharingRules'
+        })
+    return True
+
 def filter_zip_entries(zip_bytes: bytes) -> tuple[bytes, list[tuple[str, int]]]:
     buf = io.BytesIO()
     skipped: list[tuple[str, int]] = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as src, zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as dst:
         total_size = 0
+        entry_count = 0
         for info in src.infolist():
-            if info.is_dir() or is_ignored(info.filename):
-                continue
-            if not any(info.filename.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
+            if info.is_dir() or not is_salesforce_file(info.filename):
                 continue
             if info.file_size > MAX_FILE_SIZE:
                 print(f"[!] Warning: Skipping '{info.filename}' ({info.file_size / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
                 skipped.append((info.filename, info.file_size))
                 continue
-            if total_size + info.file_size > MAX_TOTAL_SIZE:
-                print(f"[!] Warning: Total archive size exceeds {MAX_TOTAL_SIZE // (1024 * 1024)} MiB. Skipping remaining files.")
+            if total_size + info.file_size > MAX_TOTAL_SIZE or entry_count >= MAX_ENTRIES:
+                print(f"[!] Warning: Total archive limit reached ({MAX_ENTRIES} entries / {MAX_TOTAL_SIZE // (1024 * 1024)} MiB). Skipping remaining files.")
                 break
             total_size += info.file_size
+            entry_count += 1
             dst.writestr(info, src.read(info.filename))
     return buf.getvalue(), skipped
 
@@ -103,6 +130,7 @@ def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> tu
         raise ValueError("Scan path must remain inside the repository.")
     buf = io.BytesIO()
     total_size = 0
+    entry_count = 0
     skipped: list[tuple[str, int]] = []
 
     candidate_files: list[Path] = []
@@ -130,9 +158,7 @@ def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> tu
                 rel = p.relative_to(cwd).as_posix()
             except ValueError:
                 continue
-            if is_ignored(rel):
-                continue
-            if not any(p.name.endswith(ext) for ext in SALESFORCE_EXTENSIONS):
+            if not is_salesforce_file(rel):
                 continue
             try:
                 size = p.stat().st_size
@@ -142,10 +168,11 @@ def create_archive_from_working_dir(cwd: Path, subpath: str | None = None) -> tu
                 print(f"[!] Warning: Skipping '{rel}' ({size / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
                 skipped.append((rel, size))
                 continue
-            if total_size + size > MAX_TOTAL_SIZE:
-                print(f"[!] Warning: Total archive size exceeds {MAX_TOTAL_SIZE // (1024 * 1024)} MiB. Skipping remaining files.")
+            if total_size + size > MAX_TOTAL_SIZE or entry_count >= MAX_ENTRIES:
+                print(f"[!] Warning: Total archive limit reached ({MAX_ENTRIES} entries / {MAX_TOTAL_SIZE // (1024 * 1024)} MiB). Skipping remaining files.")
                 break
             total_size += size
+            entry_count += 1
             z.write(p, rel)
     return buf.getvalue(), skipped
 
