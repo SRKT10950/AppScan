@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '../..');
 const target = path.join(root, 'vscode-extension/python');
+fs.rmSync(target, {recursive: true, force: true});
 fs.mkdirSync(target, {recursive: true});
 fs.cpSync(path.join(root, 'app'), path.join(target, 'app'), {
   recursive: true, filter: source => !source.includes('__pycache__') && !source.endsWith('.pyc')

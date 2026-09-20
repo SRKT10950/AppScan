@@ -9,7 +9,7 @@ import base64
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import time
