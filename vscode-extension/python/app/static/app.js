@@ -2,8 +2,10 @@
 const $ = id => document.getElementById(id);
 let auth = '', selected = null, historyTimer = null;
 const el = (tag, text, cls) => { const n = document.createElement(tag); if(text !== undefined) n.textContent = text; if(cls) n.className = cls; return n; };
+const apiPrefix = window.location.pathname.replace(/\/+$/, '');
 async function api(path, options = {}) {
-  const response = await fetch(path, {...options, headers: {'Authorization': auth, ...(options.headers || {})}});
+  const target = apiPrefix + path;
+  const response = await fetch(target, {...options, headers: {'Authorization': auth, ...(options.headers || {})}});
   if (!response.ok) { let body; try { body = await response.json(); } catch { body = {}; } throw new Error(body.error || `Request failed (${response.status})`); }
   return response;
 }
@@ -12,18 +14,18 @@ $('login-form').onsubmit = async event => {
   event.preventDefault();
   const bytes = new TextEncoder().encode($('username').value + ':' + $('password').value);
   auth = 'Basic ' + btoa(Array.from(bytes, b => String.fromCharCode(b)).join(''));
-  try { await refresh(); $('password').value = ''; $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false; historyTimer = setInterval(() => refresh().catch(e => notice(e.message)), 4000); }
+  try { await loadPlatform(); await refresh(); $('password').value = ''; $('login').hidden = true; $('app').hidden = false; $('logout').hidden = false; historyTimer = setInterval(() => refresh().catch(e => notice(e.message)), 4000); }
   catch(e) { auth = ''; $('login-error').textContent = e.message; }
 };
 $('logout').onclick = () => { location.reload(); };
 $('refresh').onclick = () => refresh().catch(e => notice(e.message));
 async function refresh() {
-  const rows = await (await api('/api/scans')).json();
+  const rows = await (await api('/api/scans' + projectQuery())).json();
   $('history-rows').replaceChildren();
-  if (!rows.length) { const row = el('tr'); const cell = el('td', 'No analyses yet. Upload your source to start.'); cell.colSpan = 6; row.append(cell); $('history-rows').append(row); }
+  if (!rows.length) { const row = el('tr'); const cell = el('td', 'No analyses yet. Upload your source to start.'); cell.colSpan = 8; row.append(cell); $('history-rows').append(row); }
   for (const r of rows) {
-    const row = el('tr'); row.append(el('td', r.project), el('td', new Date(r.created).toLocaleString()), el('td', r.status));
-    const gate = el('td'); gate.append(el('span', r.gate || '—', 'badge ' + (r.gate || ''))); row.append(gate, el('td', r.count));
+    const row = el('tr'); row.append(el('td', r.project), el('td', (r.branch || 'main') + (r.pull_request ? ' / PR ' + r.pull_request : '')), el('td', new Date(r.created).toLocaleString()), el('td', r.status));
+    const gate = el('td'); gate.append(el('span', r.gate || '—', 'badge ' + (r.gate || ''))); row.append(gate, el('td', r.count), el('td', (r.coverage?.percent ?? '—') + '% / ' + (r.duplication?.percent ?? '—') + '%'));
     const action = el('td'); const button = el('button', 'View', 'quiet'); button.onclick = () => openScan(r.id).catch(e => notice(e.message)); action.append(button); row.append(action); $('history-rows').append(row);
   }
   if (selected && ['queued','running'].includes(selected.status)) await openScan(selected.id);
@@ -36,9 +38,9 @@ function fileData(file) {
 $('scan-form').onsubmit = async event => {
   event.preventDefault(); $('start').disabled = true; notice('Uploading source and queuing analysis…');
   try {
-    const payload = {project: $('project').value, api_version: $('version').value, current: await fileData($('current').files[0]), baseline: await fileData($('baseline').files[0])};
+    const payload = {project: $('project').value, api_version: $('version').value, branch: $('scan-branch').value, pull_request: $('scan-pr').value, revision: $('scan-revision').value, coverage: $('coverage-file').files[0] ? JSON.parse(await $('coverage-file').files[0].text()) : null, current: await fileData($('current').files[0]), baseline: await fileData($('baseline').files[0])};
     const response = await (await api('/api/scans', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})).json();
-    await openScan(response.id); await refresh();
+    await loadProjects(); await openScan(response.id); await refresh();
   } catch(e) { notice(e.message); }
   finally { $('start').disabled = false; }
 };
@@ -57,6 +59,7 @@ async function openScan(id) {
   $('report-title').textContent = selected.project;
   $('report-meta').textContent = `${new Date(selected.created).toLocaleString()} · ${r.files} files · ${r.comparison === 'baseline' ? 'Baseline comparison' : 'Full inventory'}`;
   $('warnings').replaceChildren(...r.warnings.map(w => el('p', w)));
+  renderQualitySummary(r);
   renderFindings();
   $('changes').replaceChildren();
   for (const c of r.changes) { const row = el('tr'), status = el('td'); status.append(el('span', c.status, 'badge ' + c.status)); row.append(status, el('td', c.type), el('td', c.member)); $('changes').append(row); }
@@ -76,7 +79,7 @@ function renderFindings() {
   $('findings').replaceChildren();
   for(const f of findings.slice(0,500)) {
     const row = el('tr'), sev = el('td'), detail = el('td'), location = el('td', `${f.path}:${f.line}`);
-    sev.append(el('span', f.severity, 'badge ' + f.severity)); detail.append(el('strong', f.rule), el('small', f.message), el('small', f.engine + ' · ' + f.category)); row.append(sev, detail, location); $('findings').append(row);
+    sev.append(el('span', f.severity, 'badge ' + f.severity)); detail.append(el('strong', f.rule), el('small', f.message), el('small', f.engine + ' · ' + f.category + ' · ' + (f.is_new ? 'New' : 'Existing') + ' · ' + (f.status || 'open'))); row.append(sev, detail, location); $('findings').append(row);
   }
   if(!findings.length) { const row = el('tr'), cell = el('td', 'No findings match this view. Check coverage and errors before accepting a scan.'); cell.colSpan=3; row.append(cell); $('findings').append(row); }
   $('finding-count').textContent = `${findings.length} findings match · showing up to 500 · complete results are in the download`;

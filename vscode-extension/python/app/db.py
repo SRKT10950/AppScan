@@ -1,6 +1,6 @@
-﻿"""
+"""
 AppScan Database Layer
-Supports PostgreSQL (Central Database) with automatic fallback to local SQLite.
+Uses PostgreSQL when configured, otherwise SQLite. Never silently switches databases.
 """
 from contextlib import contextmanager
 import json
@@ -31,7 +31,7 @@ def get_pg_config():
             "host": pg_host,
             "port": int(os.environ.get("CENTRAL_PG_PORT", "5432")),
             "user": os.environ.get("CENTRAL_PG_USER", "postgres"),
-            "password": os.environ.get("CENTRAL_PG_PASSWORD", "postgres_master_pass_2026"),
+            "password": os.environ.get("CENTRAL_PG_PASSWORD", ""),
             "dbname": os.environ.get("CENTRAL_PG_DATABASE") or os.environ.get("CENTRAL_PG_DB", "appscan_db"),
             "connect_timeout": 5
         }
@@ -71,37 +71,23 @@ class DBWrapper:
 
 @contextmanager
 def get_db():
-    pg_conf = get_pg_config() if HAVE_PSYCOPG2 else None
+    pg_conf = get_pg_config()
     if pg_conf:
-        try:
-            if "url" in pg_conf:
-                conn = psycopg2.connect(pg_conf["url"], cursor_factory=RealDictCursor)
-            else:
-                conn = psycopg2.connect(**pg_conf, cursor_factory=RealDictCursor)
-            cur = conn.cursor()
-            wrapper = DBWrapper("postgres", conn, cur)
-            try:
-                yield wrapper
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            finally:
-                cur.close()
-                conn.close()
-            return
-        except Exception as exc:
-            # Fall back to SQLite if PostgreSQL connection fails
-            print(f"[AppScan DB] PostgreSQL connection failed ({exc}). Falling back to SQLite.", flush=True)
-
-    # SQLite fallback
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DATA_DIR / "appscan.db", timeout=15)
-    conn.row_factory = sqlite3.Row
+        if not HAVE_PSYCOPG2:
+            raise RuntimeError("PostgreSQL is configured but psycopg2 is not installed.")
+        if "url" in pg_conf:
+            conn = psycopg2.connect(pg_conf["url"], cursor_factory=RealDictCursor, connect_timeout=5)
+        else:
+            conn = psycopg2.connect(**pg_conf, cursor_factory=RealDictCursor)
+        backend = "postgres"
+    else:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DATA_DIR / "appscan.db", timeout=15)
+        conn.row_factory = sqlite3.Row
+        backend = "sqlite"
     cur = conn.cursor()
-    wrapper = DBWrapper("sqlite", conn, cur)
     try:
-        yield wrapper
+        yield DBWrapper(backend, conn, cur)
         conn.commit()
     except Exception:
         conn.rollback()

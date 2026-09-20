@@ -2,7 +2,7 @@
   "name": "appscan-salesforce",
   "displayName": "AppScan - Salesforce Security & Code Analysis",
   "description": "On-premises Salesforce code analysis, security linting, quality gates, and git baseline comparison for VS Code",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "srkt",
   "engines": {
     "vscode": "^1.80.0"
@@ -27,7 +27,8 @@
     "onCommand:appscan.scanWithCustomBaseline",
     "onCommand:appscan.scanFolder",
     "onCommand:appscan.showReport",
-    "onCommand:appscan.clearFindings"
+    "onCommand:appscan.clearFindings",
+    "onCommand:appscan.setToken"
   ],
   "contributes": {
     "commands": [
@@ -55,6 +56,10 @@
         "command": "appscan.clearFindings",
         "title": "AppScan: Clear Diagnostic Findings",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "appscan.setToken",
+        "title": "AppScan: Set Server API Token"
       }
     ],
     "menus": {
@@ -66,11 +71,21 @@
         }
       ],
       "commandPalette": [
-        { "command": "appscan.scanWorkspace" },
-        { "command": "appscan.scanWithCustomBaseline" },
-        { "command": "appscan.scanFolder" },
-        { "command": "appscan.showReport" },
-        { "command": "appscan.clearFindings" }
+        {
+          "command": "appscan.scanWorkspace"
+        },
+        {
+          "command": "appscan.scanWithCustomBaseline"
+        },
+        {
+          "command": "appscan.scanFolder"
+        },
+        {
+          "command": "appscan.showReport"
+        },
+        {
+          "command": "appscan.clearFindings"
+        }
       ],
       "editor/title": [
         {
@@ -96,7 +111,7 @@
         "appscan.password": {
           "type": "string",
           "default": "",
-          "description": "AppScan server password (if empty, read from AppScan/.env)"
+          "description": "Legacy password setting. Prefer AppScan: Set Server API Token (VS Code SecretStorage)."
         },
         "appscan.defaultBaseline": {
           "type": "string",
@@ -113,8 +128,9 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "compile": "npm run sync-python && tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "sync-python": "node scripts/sync-python.js"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
