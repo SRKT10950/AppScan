@@ -10,9 +10,9 @@ if [ ! -f .env ]; then
 APPSCAN_USER=admin
 APPSCAN_PASSWORD=$secret
 APPSCAN_BIND=127.0.0.1
-APPSCAN_PORT=8088
+APPSCAN_PORT=8089
 EOF
   echo 'Created .env with a random admin password. Read it locally to sign in.'
 fi
 docker compose up -d --build
-echo 'AppScan: http://127.0.0.1:8088. For remote access, use the SSH tunnel in README.md.'
+echo 'AppScan: http://127.0.0.1:8089. For remote access, use the SSH tunnel in README.md.'

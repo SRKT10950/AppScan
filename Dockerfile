@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-
     && echo "${PMD_SHA256}  /tmp/pmd.zip" | sha256sum -c - \
     && unzip -q /tmp/pmd.zip -d /opt && mv "/opt/pmd-bin-${PMD_VERSION}" /opt/pmd \
     && rm /tmp/pmd.zip && apt-get purge -y curl unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* \
-    && useradd --uid 10001 --create-home appscan && mkdir /data && chown appscan:appscan /data
+    && useradd --uid 10001 --create-home appscan && mkdir /data && chown appscan:appscan /data \
+    && pip install --no-cache-dir psycopg2-binary
 WORKDIR /srv
 COPY --chown=appscan:appscan app /srv/app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data PMD_BIN=/opt/pmd/bin/pmd JAVA_TOOL_OPTIONS=-Xmx768m

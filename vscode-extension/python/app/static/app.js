@@ -2,10 +2,8 @@
 const $ = id => document.getElementById(id);
 let auth = '', selected = null, historyTimer = null;
 const el = (tag, text, cls) => { const n = document.createElement(tag); if(text !== undefined) n.textContent = text; if(cls) n.className = cls; return n; };
-const apiPrefix = window.location.pathname.replace(/\/+$/, '');
 async function api(path, options = {}) {
-  const target = apiPrefix + path;
-  const response = await fetch(target, {...options, headers: {'Authorization': auth, ...(options.headers || {})}});
+  const response = await fetch(path, {...options, headers: {'Authorization': auth, ...(options.headers || {})}});
   if (!response.ok) { let body; try { body = await response.json(); } catch { body = {}; } throw new Error(body.error || `Request failed (${response.status})`); }
   return response;
 }
