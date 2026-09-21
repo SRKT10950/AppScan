@@ -5,11 +5,11 @@ import json
 import re
 import secrets
 from .db import get_db
-from . import platform, quality
+from . import platform, quality, governance
 from .scanner import scan
 
 
-def direct_scan(current, baseline, version, coverage, context):
+def direct_scan(current, baseline, version, coverage, context, external=None):
     name=context.get('project','')
     branch=context.get('branch','main')
     pr=context.get('pull_request','')
@@ -27,10 +27,10 @@ def direct_scan(current, baseline, version, coverage, context):
         db.execute('CREATE TABLE IF NOT EXISTS scans (id TEXT PRIMARY KEY, project TEXT, created TEXT, status TEXT, result TEXT)')
     platform.initialize()
     project=platform.ensure_project({'username':'local-cli','role':'admin'},name)
-    policy=quality.validate_policy(json.loads(project['settings']))
-    result=scan(current,baseline,version,policy,coverage)
+    policy=governance.effective_policy(project)
+    result=scan(current,baseline,version,policy,coverage,external)
     sid=secrets.token_hex(16)
-    with get_db() as db:
+    with platform.STATE_LOCK, get_db() as db:
         db.execute('INSERT INTO scans VALUES (?,?,?,?,?)',(sid,name,platform.now(),'running','{}'))
         db.execute('INSERT INTO scan_context VALUES (?,?,?,?,?,?,?)',(sid,project['id'],branch,pr,revision,'local-cli',json.dumps(policy)))
         if policy['store_source']:

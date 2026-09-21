@@ -1,17 +1,17 @@
-# Release validation
+# Release validation: 0.3
 
-This release incorporates the user's updated `main` through 11b81fa, preserving PostgreSQL, `/appscan/`, CLI, and VS Code work.
+This release incorporates the user's updated main through **31e269d**, including the dashboard redesign, selective Salesforce tests, CLI packaging fixes, and VS Code reporting changes. Existing PostgreSQL configuration, `/appscan/` routing, and direct-persistence mode are retained.
 
-Completed checks and their results are recorded here before publishing. No Docker, PostgreSQL deployment, or GitHub check-decoration success is inferred from unit tests.
+- **73 Python tests passed** on SQLite, including existing scanner/test-runner tests and new shared-profile inheritance/cycle rollback, immutable snapshots, group revocation/token scope, atomic bulk rollback, filtered/keyset pagination, notification/portfolio visibility, retention pinning/stale-plan protection, SARIF import/lifecycle, legacy fingerprint compatibility, and changed-line coverage tests. HTTP tests exercise new routes and admin restrictions.
+- **Real ESLint 9.39.1:** LWC decorators parse; dynamic eval is detected despite inline disable directives; uploaded executable ESLint configuration is not executed; malformed JavaScript reports an error. Missing requested engine makes the gate INCOMPLETE.
+- **Real PMD 7.17.0 and CPD:** current/baseline demonstration scans completed without engine errors; Apex CRUD/SOQL injection and privileged permissions found. CPD completed. Gate was FAIL as expected for the deliberate vulnerabilities.
+- **Browser workflow passed:** headless Chromium, routed dashboard and `/appscan/` redirect; login, project/user/policy setup, named profile binding, group editing, portfolio creation, retention preview, real PMD/CPD upload, source browsing, bulk issue review, notifications/read state, and viewer restrictions. Desktop/mobile screenshots inspected; no page errors or horizontal overflow at 390px. No live data was purged; retention apply is tested in temporary databases.
+- **VS Code TypeScript compilation and Python bundle synchronization:** passed. New Python modules are included; JavaScript dependencies remain server/operator installed.
+- **Python/JavaScript syntax and git whitespace checks:** passed.
+- **Docker image build / live PostgreSQL:** not run. No Docker daemon is available, and installation of PostgreSQL was blocked by environment package-install permissions. SQL portability and tests do not establish runtime PostgreSQL migration success. Use a backed-up staging Ubuntu deployment to validate image construction, database migration, volume ownership, and restart behavior.
+- **Salesforce org test execution:** existing test-runner unit tests use mocks; no Salesforce org was contacted in this release verification.
+- **GitHub check decoration / outbound notifications:** no live helper check run or outbound notification was published. In-app notifications are implemented.
 
-- Automated Python tests: 42 tests passed.
-- Real PMD 7.17.0: Apex CRUD and SOQL injection found in demonstration source; current/baseline scanning completed.
-- Rule catalog: 72 entries loaded from local PMD plus built-in metadata rules.
-- PMD CPD: duplicate-report XML namespace handling verified using deliberate duplicate Apex code: one group, 175 tokens, 100% duplicated lines.
-- Python and JavaScript syntax checks: passed.
-- VS Code TypeScript compilation and bundle sync: passed.
-- Browser workflow: passed in headless Chromium at desktop and mobile widths: login/error handling, project/user/policy setup, real scan with baseline and coverage, source browsing, hotspot review, rule detail, token creation/revocation, report download, and viewer restrictions. No browser page errors or mobile horizontal overflow.
-- Docker image build / live PostgreSQL migration: not run in this environment; no Docker/PostgreSQL daemon available. Test with a backup on a staging Ubuntu deployment before merging/deploying.
-- Optional GitHub check-run publication: helper supplied, no live GitHub write performed by that helper.
+Schema changes are additive and SQLite migration is idempotent. Scan cleanup is opt-in, requires an unchanged preview hash, and is designed for one server process. Do not run multiple instances or operator direct-persistence writes concurrently with maintenance.
 
-The SQLite migration is tested for idempotence and legacy scan preservation. PostgreSQL SQL uses the same schema and transactions but needs runtime validation against the target server. Configured DB failures no longer fall back to SQLite.
+See [FEATURES.md](FEATURES.md) for remaining product gaps. This is not full SonarQube parity.

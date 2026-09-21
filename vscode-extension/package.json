@@ -2,7 +2,7 @@
   "name": "appscan-salesforce",
   "displayName": "AppScan - Salesforce Security & Code Analysis",
   "description": "On-premises Salesforce code analysis, security linting, quality gates, and git baseline comparison for VS Code",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "srkt",
   "engines": {
     "vscode": "^1.80.0"

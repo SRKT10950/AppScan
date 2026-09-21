@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
   <script src="platform.js" defer></script>
+  <script src="team.js" defer></script>
 </head>
 <body>
   <!-- SIDEBAR NAVIGATION -->
@@ -21,6 +22,7 @@
       <strong>On-premises / Salesforce</strong>
     </div>
     <nav>
+      <a href="#team">☷ &nbsp; Teams & portfolios</a>
       <a href="#overview" class="active"><span class="nav-icon">📊</span> Scan overview</a>
       <a href="#projects"><span class="nav-icon">📁</span> Projects</a>
       <a href="#issues-panel"><span class="nav-icon">🛡️</span> Issues & hotspots</a>
@@ -255,7 +257,7 @@
             <label>Commit / revision <small>(optional)</small>
               <input id="scan-revision" maxlength="100">
             </label>
-            <label>Coverage JSON <small>(optional; normalized files[])</small>
+            <label>External SARIF <small>(optional; caller-supplied)</small><input type="file" id="sarif-file" accept=".sarif,.json"></label><label>Coverage JSON <small>(optional; normalized files[])</small>
               <input type="file" id="coverage-file" accept=".json">
             </label>
             <label class="upload">Current source
@@ -316,7 +318,7 @@
             <tbody id="issue-rows"></tbody>
           </table>
         </div>
-        <p class="muted">Up to 2,000 issues. Historical scan gates stay unchanged after review; rescan to apply decisions.</p>
+        <p id="issue-page-info" class="muted"></p><button id="issues-first" class="quiet">First page</button> <button id="issues-next" class="quiet" disabled>Next page</button><form id="bulk-review" class="inline-form"><label>Status<select id="bulk-status"><option>confirmed</option><option>accepted</option><option>false_positive</option><option>open</option><option>safe</option></select></label><label>Required review comment<input id="bulk-comment" required maxlength="4000"></label><button>Review selected issues</button></form><p class="muted">Historical scan gates stay unchanged after review; rescan to apply decisions.</p>
       </section>
 
       <!-- VIEW: QUALITY SETTINGS -->
@@ -343,7 +345,7 @@
               <label>Minimum imported coverage (%)
                 <input id="policy-coverage" type="number" min="0" max="100" step="0.1" placeholder="Not required">
               </label>
-              <label>Maximum duplicated Apex lines (%)
+              <label>Minimum changed-line coverage (%)<input id="policy-new-coverage" type="number" min="0" max="100" step="0.1" placeholder="Not required"></label><label class="check"><input id="policy-javascript" type="checkbox"> Analyze JavaScript / LWC with ESLint</label><label>Maximum duplicated Apex lines (%)
                 <input id="policy-duplication" type="number" min="0" max="100" step="0.1" placeholder="Not required">
               </label>
               <label class="check">
@@ -405,6 +407,7 @@
         </div>
       </section>
 
+      <section id="team" class="panel app-view"><div class="section-title"><h2>Teams & portfolios</h2><button id="team-refresh" class="quiet">Refresh</button></div><h3>Your notifications</h3><div id="notifications-list"></div><h3>Portfolio overview</h3><p>Latest completed non-PR analysis per project, across branches. Portfolios appear only when all member projects are accessible.</p><div id="portfolio-list"></div><div class="admin-only"><h3>Shared policies & access</h3><div id="team-catalog"></div><div id="team-admin"></div><h3>Retention cleanup</h3><p>Cleanup is disabled by default. Preview lists exact scan and source IDs. Issue history references and the configured recent scans are protected.</p><button id="retention-preview" class="quiet">Preview selected project</button> <button id="retention-apply" disabled>Apply previewed cleanup</button><pre id="retention-result"></pre></div></section>
       <!-- VIEW: ADMINISTRATION -->
       <section id="administration" class="panel app-view">
         <div class="section-title">
@@ -483,7 +486,7 @@
           <div>
             <div class="eyebrow">AUDIT TRAIL</div>
             <h2>Recent analyses</h2>
-            <p>Latest 100 scans retained in this workspace.</p>
+            <p>Browse history, 100 analyses per page.</p>
           </div>
           <button id="refresh" class="quiet" type="button">↻ Refresh</button>
         </div>
@@ -504,9 +507,10 @@
             <tbody id="history-rows"></tbody>
           </table>
         </div>
-      </section>
+      <button id="history-first" class="quiet">Latest analyses</button> <button id="history-next" class="quiet" disabled>Older analyses</button>
+</section>
 
-      <footer>AppScan v0.2 · PMD Apex + metadata checks · A passing gate is not a security certification.</footer>
+      <footer>AppScan v0.3 · PMD Apex + metadata checks · A passing gate is not a security certification.</footer>
     </div>
   </main>
 

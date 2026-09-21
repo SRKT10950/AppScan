@@ -39,7 +39,7 @@ function notice(message = '') {
 
 function setRoute(hash) {
   const target = (hash || window.location.hash || '#overview').replace(/^#/, '');
-  const views = ['overview', 'projects', 'issues-panel', 'quality-settings', 'rules-panel', 'administration', 'new-scan', 'history'];
+  const views = ['overview', 'projects', 'issues-panel', 'quality-settings', 'rules-panel', 'team', 'administration', 'new-scan', 'history'];
   const active = views.includes(target) ? target : 'overview';
 
   for (const a of document.querySelectorAll('nav a')) {
@@ -55,6 +55,7 @@ function setRoute(hash) {
   }
 
   const titles = {
+    'team':'Teams & portfolios',
     'overview': 'Scan overview',
     'projects': 'Projects & Branch Filters',
     'issues-panel': 'Issues & security hotspots',
@@ -104,8 +105,10 @@ $('logout').onclick = () => {
 
 $('refresh').onclick = () => refresh().catch(e => notice(e.message));
 
+let historyCursor='',historyNext=null;
 async function refresh() {
-  const rows = await (await api('/api/scans' + projectQuery())).json();
+  const page=await (await api('/api/scans'+projectQuery()+'&page_size=100&cursor='+encodeURIComponent(historyCursor))).json();
+  const rows=page.items;historyNext=page.next_cursor;$('history-next').disabled=!historyNext;
   $('history-rows').replaceChildren();
   if (!rows.length) {
     const row = el('tr');
@@ -163,6 +166,7 @@ $('scan-form').onsubmit = async event => {
       branch: $('scan-branch').value,
       pull_request: $('scan-pr').value,
       revision: $('scan-revision').value,
+      external: $('sarif-file').files[0] ? JSON.parse(await $('sarif-file').files[0].text()) : null,
       coverage: $('coverage-file').files[0] ? JSON.parse(await $('coverage-file').files[0].text()) : null,
       current: await fileData($('current').files[0]),
       baseline: await fileData($('baseline').files[0])
@@ -248,7 +252,7 @@ async function openScan(id) {
     $('changes').append(row);
   }
   const coverage = $('coverage-view');
-  coverage.replaceChildren(el('p', 'Apex: PMD security, design, performance, and error-prone rules. XML: selected permission, flow, and endpoint checks. Secrets: heuristic detection. LWC/Aura: change mapping only; no JavaScript security analysis.'));
+  coverage.replaceChildren(el('p', 'Apex: PMD security, design, performance, and error-prone rules. XML: selected permission, flow, and endpoint checks. Secrets: heuristic detection. JavaScript/LWC: fixed ESLint rules when enabled in project policy. External SARIF is caller-supplied evidence.'));
   coverage.append(el('h2', 'Analysis errors'));
   if (!r.errors.length) coverage.append(el('p', 'No analysis errors reported.'));
   for (const error of r.errors) {
@@ -320,3 +324,6 @@ $('download').onclick = async () => {
     notice(e.message);
   }
 };
+
+$('history-first').onclick=()=>{historyCursor='';refresh().catch(e=>notice(e.message));};
+$('history-next').onclick=()=>{historyCursor=historyNext||'';refresh().catch(e=>notice(e.message));};

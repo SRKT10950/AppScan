@@ -45,6 +45,6 @@ def parse_coverage(text):
                 current = None
         if not records:
             raise ValueError('Coverage is neither supported JSON nor LCOV.')
-        value = {'files': [{'path': p, 'covered_lines': sum(n > 0 for n in lines.values()), 'uncovered_lines': sum(n == 0 for n in lines.values())} for p, lines in records.items()]}
+        value = {'files': [{'path': p, 'line_hits': {str(k):v for k,v in lines.items()}, 'covered_lines': sum(n > 0 for n in lines.values()), 'uncovered_lines': sum(n == 0 for n in lines.values())} for p, lines in records.items()]}
     coverage_metrics(value)
     return value

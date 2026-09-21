@@ -1,13 +1,20 @@
-# AppScan 0.2 — on-premises Salesforce quality platform
+# AppScan 0.3 — on-premises Salesforce quality platform
 
 AppScan scans Salesforce source and metadata on Ubuntu Server/Docker, with a web dashboard, CLI, and VS Code extension. It uses PMD for Apex analysis and duplication detection. This is an independent implementation, not SonarQube or a claim of complete SonarQube parity.
 
 See [the feature matrix](docs/FEATURES.md) for implemented features, limited implementations, and pending work.
 
+See [the 0.3 team and analysis guide](docs/TEAM_ANALYSIS.md) for setup, API contracts, retention semantics, and import limitations.
+
 ## Features in this release
 
+- Named shared profiles with inheritance and project overrides; group access.
+- Atomic bulk reviews, paginated issues/history, in-app notifications, and flat portfolios.
+- Opt-in JavaScript/LWC ESLint analysis, external SARIF import, and changed-line coverage gates.
+- Retention preview/apply with protected issue references and separate source cleanup.
+
 - Projects, branch history, isolated PR analysis namespaces, commit traceability.
-- PMD Apex security, performance, design, error-prone, best-practice, and code-style categories; 72 catalog entries with the pinned distribution (including metadata checks).
+- PMD Apex security, performance, design, error-prone, best-practice, and code-style categories; PMD and metadata rule catalog, plus 13 opt-in ESLint rules.
 - Per-project quality profiles: categories, disabled rules, severity overrides, and path exclusions.
 - Configurable overall/new-finding gates, blocker thresholds, imported coverage thresholds, duplication thresholds, and hotspot-review requirements.
 - Stable issue fingerprints; open/confirmed/accepted/false-positive/safe review; assignees, required comments, automatic fixed/reopened lifecycle.
@@ -28,7 +35,7 @@ Install [Docker Engine and Docker Compose](https://docs.docker.com/engine/instal
 git clone https://github.com/SRKT10950/AppScan.git
 cd AppScan
 # Until this release is merged, use its review branch:
-git switch feature/quality-platform
+git switch feature/team-analysis
 ./setup.sh
 ```
 
@@ -179,7 +186,7 @@ Basic auth or `Authorization: Bearer aps_...` is required except for assets and 
 
 ## Limits and validation
 
-One worker; maximum three queued/running scans. ZIP limits: 20 MiB compressed, 100 MiB expanded, 2 MiB/file, 10,000 entries. Source code is never executed. Traversal paths, symlinks, encrypted archives, and duplicate component paths are rejected. PMD and CPD each have a 180-second timeout; current/baseline scans can both run. No SSO, clustering, server-side Git fetching, automated org retrieval, or complete multi-language analysis yet.
+One worker; maximum three queued/running scans. ZIP limits: 20 MiB compressed, 100 MiB expanded, 2 MiB/file, 100,000 entries. The server never executes uploaded source. Optional CLI selective tests run in the authenticated Salesforce org. Traversal paths, symlinks, encrypted archives, and duplicate component paths are rejected. PMD and CPD each have a 180-second timeout; current/baseline scans can both run. No SSO, clustering, server-side Git fetching, automated org retrieval, or complete multi-language analysis yet.
 
 ```bash
 python -m unittest discover -s tests -v
