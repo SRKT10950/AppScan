@@ -73,7 +73,7 @@ def enrich(findings, files, policy):
         f['severity'] = policy['severity_overrides'].get(f['rule'], f['severity'])
         f['kind'] = 'hotspot' if f['rule'] in HOTSPOTS else 'vulnerability' if f['category'] == 'Security' else 'code_smell'
         lines = files.get(f['path'], b'').decode('utf-8', errors='replace').splitlines()
-        index = max(0, int(f.get('line', 1)) - 1)
+        index = max(0, int(f.get('line') or 1) - 1)
         anchor = re.sub(r'\s+', ' ', lines[index].strip()) if index < len(lines) else f['message']
         # Repeated findings on identical source lines get deterministic occurrence IDs.
         seed = json.dumps([f['engine'], f['rule'], canonical(f['path']), anchor, f['message']], ensure_ascii=True)
@@ -151,5 +151,5 @@ def sarif(result):
         'tool': {'driver': {'name': 'AppScan', 'version': '0.2.0', 'rules': [{'id': r} for r in rules]}},
         'results': [{'ruleId': f['rule'], 'level': 'error' if f['severity'] in {'High', 'Critical'} else 'warning' if f['severity'] == 'Medium' else 'note',
                      'message': {'text': f['message']}, 'locations': [{'physicalLocation': {'artifactLocation': {'uri': __import__('urllib.parse', fromlist=['quote']).quote(f['path'], safe='/')},
-                     'region': {'startLine': max(1, int(f['line']))}}}],
+                     'region': {'startLine': max(1, int(f.get('line') or 1))}}}],
                      'partialFingerprints': {'appscan/v1': f.get('fingerprint', '')}} for f in result['findings']]}]}

@@ -24,6 +24,8 @@
   "activationEvents": [
     "onLanguage:apex",
     "onCommand:appscan.scanWorkspace",
+    "onCommand:appscan.scanWithTests",
+    "onCommand:appscan.mapTestClasses",
     "onCommand:appscan.scanWithCustomBaseline",
     "onCommand:appscan.scanFolder",
     "onCommand:appscan.showReport",
@@ -36,6 +38,16 @@
         "command": "appscan.scanWorkspace",
         "title": "AppScan: Scan Workspace against Baseline",
         "icon": "$(shield)"
+      },
+      {
+        "command": "appscan.scanWithTests",
+        "title": "AppScan: Run Selective Tests & Scan Workspace",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "appscan.mapTestClasses",
+        "title": "AppScan: Detect & Update Test Class Mappings",
+        "icon": "$(link)"
       },
       {
         "command": "appscan.scanWithCustomBaseline",
@@ -75,6 +87,12 @@
           "command": "appscan.scanWorkspace"
         },
         {
+          "command": "appscan.scanWithTests"
+        },
+        {
+          "command": "appscan.mapTestClasses"
+        },
+        {
           "command": "appscan.scanWithCustomBaseline"
         },
         {
@@ -100,8 +118,23 @@
       "properties": {
         "appscan.serverUrl": {
           "type": "string",
-          "default": "http://192.168.50.109:8089",
-          "description": "URL of the AppScan backend server"
+          "default": "https://mhservice.co.in/appscan",
+          "description": "URL of the AppScan backend server (e.g. https://mhservice.co.in/appscan or http://localhost:8089)"
+        },
+        "appscan.offline": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run static code analysis locally without connecting to an AppScan server"
+        },
+        "appscan.fallbackToOffline": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically fall back to local offline analysis if the remote server is unreachable"
+        },
+        "appscan.pmdBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Custom path to PMD executable script (e.g. C:\\pmd\\bin\\pmd.bat or /opt/pmd/bin/pmd)"
         },
         "appscan.username": {
           "type": "string",
@@ -122,6 +155,21 @@
           "type": "string",
           "default": "64.0",
           "description": "Target Salesforce Metadata API version"
+        },
+        "appscan.runSelectiveTests": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically run selective Apex test classes for modified classes via Salesforce CLI on scan"
+        },
+        "appscan.testMappingPath": {
+          "type": "string",
+          "default": ".appscan/test-mapping.json",
+          "description": "Path to the class-to-test mapping JSON file"
+        },
+        "appscan.targetOrg": {
+          "type": "string",
+          "default": "",
+          "description": "Salesforce target org alias or username for selective test runs (optional)"
         }
       }
     }

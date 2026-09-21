@@ -57,6 +57,24 @@ class PolicyTests(unittest.TestCase):
         r=parse_coverage(json.dumps({'result':{'coverage':[{'name':'AccountService','numLinesCovered':8,'numLinesUncovered':2}]}}))
         self.assertEqual(quality.coverage_metrics(r)['percent'],80)
 
+    def test_salesforce_duplicate_class_aggregation(self):
+        r=parse_coverage(json.dumps({'result':{'coverage':[
+            {'name':'AccountService','numLinesCovered':5,'numLinesUncovered':2},
+            {'name':'AccountService','numLinesCovered':3,'numLinesUncovered':0},
+        ]}}))
+        self.assertEqual(len(r['files']),1)
+        self.assertEqual(r['files'][0]['covered_lines'],8)
+        self.assertEqual(r['files'][0]['uncovered_lines'],2)
+        self.assertEqual(quality.coverage_metrics(r)['percent'],80)
+
+    def test_none_line_number_safe(self):
+        f={'rule':'BroadDataAccess','severity':'High','path':'classes/A.cls','line':None,'message':'Msg','engine':'Metadata','category':'Security'}
+        p=quality.validate_policy({})
+        enriched=quality.enrich([f],{'classes/A.cls':b'public class A {}'},p)
+        self.assertEqual(len(enriched),1)
+        s=quality.sarif({'findings':enriched})
+        self.assertEqual(s['runs'][0]['results'][0]['locations'][0]['physicalLocation']['region']['startLine'],1)
+
     def test_new_scope_uploaded_baseline(self):
         r=scanner.scan({RISK_PATH:RISK_XML.encode()},{RISK_PATH:RISK_XML.encode()},'64.0',{'scope':'new'})
         self.assertEqual(r['gate'],'PASS')
@@ -257,6 +275,19 @@ class AccessTests(unittest.TestCase):
         events=json.load(self.req('/api/audit'))
         self.assertTrue(any(e['action']=='project.create' for e in events))
         with self.req('/appscan/') as r:self.assertEqual(r.status,200)
+
+    def test_missing_project_id_returns_400(self):
+        with self.assertRaises(urllib.error.HTTPError) as e:
+            self.req('/api/issues')
+        self.assertEqual(e.exception.code, 400)
+
+    def test_redirect_preserves_query(self):
+        class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+            def http_error_308(self, req, fp, code, msg, headers):
+                return fp
+        opener = urllib.request.build_opener(NoRedirectHandler)
+        resp = opener.open(urllib.request.Request(self.url + '/appscan?branch=dev'))
+        self.assertEqual(resp.headers.get('Location'), '/appscan/?branch=dev')
 
 
 if __name__=='__main__':unittest.main()

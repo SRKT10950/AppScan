@@ -16,15 +16,19 @@ def parse_coverage(text):
             records = records.get('coverage', [])
         if not isinstance(records, list) or not records:
             raise ValueError('Unsupported Salesforce coverage JSON. Use files[] or result.coverage[].')
-        files = []
+        by_name = {}
         for r in records:
-            name = r.get('name') or r.get('ApexClassOrTrigger', {}).get('Name')
+            name = r.get('name') or (r.get('ApexClassOrTrigger') or {}).get('Name')
             covered = r.get('numLinesCovered', r.get('NumLinesCovered'))
             uncovered = r.get('numLinesUncovered', r.get('NumLinesUncovered'))
             if not name or covered is None or uncovered is None:
                 raise ValueError('Coverage record needs name, numLinesCovered, and numLinesUncovered.')
-            files.append({'path': name, 'covered_lines': covered, 'uncovered_lines': uncovered})
-        value = {'files': files}
+            if name in by_name:
+                by_name[name]['covered_lines'] += int(covered)
+                by_name[name]['uncovered_lines'] += int(uncovered)
+            else:
+                by_name[name] = {'path': name, 'covered_lines': int(covered), 'uncovered_lines': int(uncovered)}
+        value = {'files': list(by_name.values())}
     else:
         records, current = {}, None
         for line in text.splitlines():

@@ -9,11 +9,14 @@ const child_process_1 = require("child_process");
 const reportPanel_1 = require("./reportPanel");
 let diagnosticCollection;
 let statusBarItem;
+let outputChannel;
 let latestScanResult = null;
 let latestProjectName = "Salesforce App";
 function activate(context) {
+    outputChannel = vscode.window.createOutputChannel("AppScan");
+    context.subscriptions.push(outputChannel);
     context.subscriptions.push(vscode.commands.registerCommand("appscan.setToken", async () => {
-        const serverUrl = vscode.workspace.getConfiguration("appscan").get("serverUrl", "http://localhost:8089");
+        const serverUrl = vscode.workspace.getConfiguration("appscan").get("serverUrl", "https://mhservice.co.in/appscan");
         const token = await vscode.window.showInputBox({ prompt: "AppScan project API token (blank clears it)", password: true, ignoreFocusOut: true });
         if (token !== undefined) {
             if (token)
@@ -34,6 +37,14 @@ function activate(context) {
         const config = vscode.workspace.getConfiguration("appscan");
         const defaultBaseline = config.get("defaultBaseline", "main");
         await runScan(context, defaultBaseline);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("appscan.scanWithTests", async () => {
+        const config = vscode.workspace.getConfiguration("appscan");
+        const defaultBaseline = config.get("defaultBaseline", "main");
+        await runScan(context, defaultBaseline, undefined, true);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand("appscan.mapTestClasses", async () => {
+        await mapTestClasses(context);
     }));
     context.subscriptions.push(vscode.commands.registerCommand("appscan.scanWithCustomBaseline", async () => {
         const config = vscode.workspace.getConfiguration("appscan");
@@ -78,7 +89,7 @@ function activate(context) {
         vscode.window.showInformationMessage("AppScan findings cleared.");
     }));
 }
-async function runScan(context, baseline, subpath) {
+async function runScan(context, baseline, subpath, forceRunTests = false) {
     if (!vscode.workspace.isTrusted) {
         vscode.window.showErrorMessage("Trust this workspace before running AppScan.");
         return;
@@ -90,8 +101,11 @@ async function runScan(context, baseline, subpath) {
     }
     const workspaceRoot = workspaceFolders[0].uri.fsPath;
     const config = vscode.workspace.getConfiguration("appscan");
-    const serverUrl = config.get("serverUrl", "http://localhost:8089");
+    const serverUrl = config.get("serverUrl", "https://mhservice.co.in/appscan");
+    const isOffline = config.get("offline", false);
+    const fallbackToOffline = config.get("fallbackToOffline", true);
     const apiVersion = config.get("apiVersion", "64.0");
+    const pmdBinPath = config.get("pmdBinPath", "");
     let cliPath = path.join(context.extensionPath, "python", "cli.py");
     if (!fs.existsSync(cliPath)) {
         cliPath = path.join(workspaceRoot, "AppScan", "cli.py");
@@ -110,20 +124,56 @@ async function runScan(context, baseline, subpath) {
         title: "Running AppScan Salesforce Analysis...",
         cancellable: false
     }, async (progress) => {
-        progress.report({ message: `Comparing against baseline '${baseline || "none"}'...` });
-        const outputDir = path.join(".appscan", "run-" + Date.now() + "-" + Math.random().toString(16).slice(2));
-        const args = [cliPath, "--api-version", apiVersion, "--server", serverUrl, "--output-dir", outputDir];
+        progress.report({ message: `Preparing analysis...` });
+        const outputDir = path.join(workspaceRoot, ".appscan", "run-" + Date.now() + "-" + Math.random().toString(16).slice(2));
+        const args = [cliPath, "--api-version", apiVersion, "--output-dir", outputDir];
+        if (isOffline) {
+            args.push("--offline");
+        }
+        else {
+            args.push("--server", serverUrl);
+            if (fallbackToOffline) {
+                args.push("--fallback-offline");
+            }
+        }
         try {
             const branch = (0, child_process_1.execFileSync)("git", ["branch", "--show-current"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
             const revision = (0, child_process_1.execFileSync)("git", ["rev-parse", "HEAD"], { cwd: workspaceRoot, encoding: "utf8" }).trim();
             args.push("--branch", branch || "detached", "--revision", revision);
         }
-        catch { /* Non-git workspaces still receive server analysis. */ }
-        if (baseline) {
-            args.push("--baseline", baseline);
+        catch { /* Non-git workspaces still receive scan analysis. */ }
+        let effectiveBaseline = baseline;
+        if (effectiveBaseline) {
+            try {
+                (0, child_process_1.execFileSync)("git", ["rev-parse", "--verify", effectiveBaseline + "^{commit}"], { cwd: workspaceRoot, stdio: "ignore" });
+            }
+            catch {
+                try {
+                    (0, child_process_1.execFileSync)("git", ["rev-parse", "--verify", `origin/${effectiveBaseline}^{commit}`], { cwd: workspaceRoot, stdio: "ignore" });
+                    effectiveBaseline = `origin/${effectiveBaseline}`;
+                }
+                catch {
+                    effectiveBaseline = undefined;
+                }
+            }
+        }
+        if (effectiveBaseline) {
+            args.push("--baseline", effectiveBaseline);
         }
         if (subpath) {
             args.push("--path", subpath);
+        }
+        const shouldRunTests = forceRunTests || config.get("runSelectiveTests", false);
+        if (shouldRunTests) {
+            args.push("--run-tests");
+        }
+        const testMapping = config.get("testMappingPath", "");
+        if (testMapping) {
+            args.push("--test-mapping", testMapping);
+        }
+        const targetOrg = config.get("targetOrg", "");
+        if (targetOrg) {
+            args.push("--target-org", targetOrg);
         }
         try {
             const credentials = {};
@@ -136,25 +186,43 @@ async function runScan(context, baseline, subpath) {
                 if (password)
                     credentials.APPSCAN_PASSWORD = password;
             }
-            await executePythonCli(args, workspaceRoot, credentials);
-            const reportFile = path.join(workspaceRoot, outputDir, "report.json");
+            outputChannel.appendLine(`\n=== AppScan Execution: ${new Date().toISOString()} ===`);
+            const cliResult = await executePythonCli(args, workspaceRoot, credentials, pmdBinPath);
+            const reportFile = path.join(outputDir, "report.json");
             if (fs.existsSync(reportFile)) {
                 const raw = fs.readFileSync(reportFile, "utf-8");
                 latestScanResult = JSON.parse(raw);
             }
             else {
-                throw new Error("The scanner did not produce a report. No quality gate can be inferred.");
+                outputChannel.show(true);
+                const errDetail = cliResult.stderr.trim() || cliResult.stdout.trim() || `Process exited with code ${cliResult.code}`;
+                throw new Error(`The scanner did not produce a report.\n\nError details:\n${errDetail}`);
             }
             latestProjectName = path.basename(workspaceRoot);
             updateDiagnostics(workspaceRoot, latestScanResult.findings || []);
             const gate = (latestScanResult.gate || "INCOMPLETE").toUpperCase();
             const findingsCount = (latestScanResult.findings || []).length;
+            const conditions = latestScanResult.quality_gate?.conditions || [];
+            const missingCoverage = conditions.some((c) => c.metric === "min_coverage" && c.status === "MISSING");
             if (gate === "PASS") {
                 statusBarItem.text = `$(pass) AppScan: PASSED (${findingsCount})`;
                 vscode.window
                     .showInformationMessage(`AppScan Passed! Quality gate is clean. (${findingsCount} findings)`, "View Report")
                     .then((selection) => {
                     if (selection === "View Report") {
+                        reportPanel_1.ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
+                    }
+                });
+            }
+            else if (gate === "INCOMPLETE" && missingCoverage) {
+                statusBarItem.text = `$(warning) AppScan: INCOMPLETE (Missing Coverage)`;
+                vscode.window
+                    .showWarningMessage(`AppScan Quality Gate: INCOMPLETE due to missing Code Coverage. Run selective Apex tests to satisfy quality gate.`, "Run Selective Tests & Scan", "View Report")
+                    .then(async (selection) => {
+                    if (selection === "Run Selective Tests & Scan") {
+                        await runScan(context, baseline, subpath, true);
+                    }
+                    else if (selection === "View Report") {
                         reportPanel_1.ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
                     }
                 });
@@ -172,36 +240,108 @@ async function runScan(context, baseline, subpath) {
         }
         catch (err) {
             statusBarItem.text = "$(error) AppScan: Error";
-            vscode.window.showErrorMessage(`AppScan failed: ${err.message || err}`);
+            vscode.window.showErrorMessage(`AppScan failed: ${err.message || err}`, "Show Output").then((sel) => {
+                if (sel === "Show Output") {
+                    outputChannel.show(true);
+                }
+            });
         }
     });
 }
-function executePythonCli(args, cwd, credentials) {
+async function mapTestClasses(context) {
+    if (!vscode.workspace.isTrusted) {
+        vscode.window.showErrorMessage("Trust this workspace before running AppScan.");
+        return;
+    }
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        vscode.window.showErrorMessage("AppScan requires an open workspace folder.");
+        return;
+    }
+    const workspaceRoot = workspaceFolders[0].uri.fsPath;
+    const config = vscode.workspace.getConfiguration("appscan");
+    const pmdBinPath = config.get("pmdBinPath", "");
+    let cliPath = path.join(context.extensionPath, "python", "cli.py");
+    if (!fs.existsSync(cliPath)) {
+        cliPath = path.join(workspaceRoot, "AppScan", "cli.py");
+    }
+    if (!fs.existsSync(cliPath)) {
+        cliPath = path.join(workspaceRoot, "cli.py");
+    }
+    if (!fs.existsSync(cliPath)) {
+        vscode.window.showErrorMessage(`AppScan CLI runner not found. Checked: ${cliPath}`);
+        return;
+    }
+    const args = [cliPath, "--map-tests"];
+    const testMapping = config.get("testMappingPath", "");
+    if (testMapping) {
+        args.push("--test-mapping", testMapping);
+    }
+    await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "AppScan: Detecting and mapping Apex test classes...",
+        cancellable: false
+    }, async () => {
+        try {
+            await executePythonCli(args, workspaceRoot, {}, pmdBinPath);
+            const mapFile = path.join(workspaceRoot, testMapping || ".appscan/test-mapping.json");
+            vscode.window
+                .showInformationMessage("AppScan: Apex test class mappings successfully updated.", "Open Mapping File")
+                .then(async (selection) => {
+                if (selection === "Open Mapping File" && fs.existsSync(mapFile)) {
+                    const doc = await vscode.workspace.openTextDocument(mapFile);
+                    await vscode.window.showTextDocument(doc);
+                }
+            });
+        }
+        catch (err) {
+            vscode.window.showErrorMessage(`Failed to map test classes: ${err.message || err}`, "Show Output").then((sel) => {
+                if (sel === "Show Output") {
+                    outputChannel.show(true);
+                }
+            });
+        }
+    });
+}
+function executePythonCli(args, cwd, credentials, pmdBinPath) {
     return new Promise((resolve, reject) => {
         const pythonCmd = process.platform === "win32" ? "python" : "python3";
         const env = { ...process.env, ...credentials };
-        if (!env.PMD_BIN && process.platform === "win32") {
-            env.PMD_BIN = "D:\\Linux Server\\AppScan\\pmd\\bin\\pmd.bat";
+        if (pmdBinPath && fs.existsSync(pmdBinPath)) {
+            env.PMD_BIN = pmdBinPath;
         }
+        else if (!env.PMD_BIN && process.platform === "win32") {
+            const candidates = [
+                path.join(cwd, "pmd", "bin", "pmd.bat"),
+                "C:\\pmd\\bin\\pmd.bat",
+                "D:\\Linux Server\\AppScan\\pmd\\bin\\pmd.bat"
+            ];
+            for (const c of candidates) {
+                if (fs.existsSync(c)) {
+                    env.PMD_BIN = c;
+                    break;
+                }
+            }
+        }
+        outputChannel.appendLine(`[SPAWN] ${pythonCmd} ${args.join(" ")}`);
         const proc = (0, child_process_1.spawn)(pythonCmd, args, { cwd, shell: false, env });
         let stdout = "";
         let stderr = "";
         proc.stdout.on("data", (data) => {
-            stdout += data.toString();
+            const str = data.toString();
+            stdout += str;
+            outputChannel.append(str);
         });
         proc.stderr.on("data", (data) => {
-            stderr += data.toString();
+            const str = data.toString();
+            stderr += str;
+            outputChannel.append(str);
         });
         proc.on("close", (code) => {
-            // Exit code 0 is PASS, code 1 is FAIL/violations detected
-            if (code === 0 || code === 1) {
-                resolve(stdout);
-            }
-            else {
-                reject(new Error(stderr || stdout || `Process exited with code ${code}`));
-            }
+            resolve({ stdout, stderr, code: code ?? 0 });
         });
         proc.on("error", (err) => {
+            outputChannel.appendLine(`[ERROR] ${err.message || err}`);
             reject(err);
         });
     });

@@ -16,6 +16,7 @@ from . import quality
 MAX_ZIP = 20 * 1024 * 1024
 MAX_EXPANDED = 100 * 1024 * 1024
 MAX_FILE = 2 * 1024 * 1024
+MAX_ENTRIES = 100000
 NS = 'http://soap.sforce.com/2006/04/metadata'
 ET.register_namespace('', NS)
 SIMPLE = {
@@ -50,11 +51,12 @@ def read_zip(encoded):
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as z:
             entries = z.infolist()
-            if len(entries) > 10000:
-                raise ValueError('Archive exceeds 10,000 entries.')
+            if len(entries) > MAX_ENTRIES:
+                raise ValueError(f'Archive exceeds {MAX_ENTRIES:,} entries.')
             for info in entries:
                 p = PurePosixPath(info.filename)
-                if p.is_absolute() or '..' in p.parts or '\\' in info.filename or ':' in info.filename:
+                orig = getattr(info, 'orig_filename', '') or ''
+                if p.is_absolute() or '..' in p.parts or '\\' in info.filename or '\\' in orig or ':' in info.filename or ':' in orig:
                     raise ValueError('Unsafe archive path.')
                 if stat.S_ISLNK(info.external_attr >> 16):
                     raise ValueError('Archive symlinks are not allowed.')
@@ -204,9 +206,11 @@ def parse_pmd(report, source):
 
 
 def find_pmd_binary():
-    env_bin = os.environ.get('PMD_BIN')
-    if env_bin and Path(env_bin).is_file():
-        return env_bin
+    if 'PMD_BIN' in os.environ:
+        env_bin = os.environ.get('PMD_BIN', '').strip()
+        if env_bin and Path(env_bin).is_file():
+            return env_bin
+        return None
     candidates = [
         Path(__file__).resolve().parent.parent / 'pmd' / 'bin' / 'pmd.bat',
         Path(__file__).resolve().parent.parent / 'pmd' / 'bin' / 'pmd',
@@ -274,7 +278,7 @@ def run_cpd(files):
         try:
             with output.open('wb') as stream:
                 proc = subprocess.run([binary, 'cpd', '--minimum-tokens', '100', '--language', 'apex', '--dir', str(source), '--format', 'xml'],
-                                      stdout=stream, stderr=subprocess.DEVNULL, timeout=180, check=False)
+                                      stdout=stream, stderr=subprocess.DEVNULL, timeout=180, check=False, shell=(os.name == 'nt'))
             if proc.returncode not in {0, 4}:
                 raise ValueError('CPD failed')
             root = ET.parse(output).getroot()
