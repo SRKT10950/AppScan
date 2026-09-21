@@ -1,7 +1,7 @@
 services:
   appscan:
     build: .
-    image: appscan:0.3
+    image: appscan:0.4
     restart: unless-stopped
     init: true
     ports:

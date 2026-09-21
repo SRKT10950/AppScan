@@ -1155,3 +1155,15 @@ footer {
 #team-admin form > button { align-self: end; justify-self: start; }
 #team-admin select[multiple] { min-height: 110px; }
 #team-catalog p { overflow-wrap: anywhere; }
+
+#trend-chart svg { width:100%; min-height:180px; max-height:360px; }
+.trend-grid { stroke:#e2e8f0; stroke-width:1; }
+.trend-label { fill:#475569; font-size:12px; }
+.trend-line { fill:none; stroke:#0284c7; stroke-width:2; }
+.trend-point { stroke:#fff; stroke-width:1; }
+.trend-point.pass { fill:#15803d; }
+.trend-point.fail { fill:#b91c1c; }
+.trend-point.incomplete { fill:#c2410c; }
+#audit-rows pre { max-width:480px; white-space:pre-wrap; overflow-wrap:anywhere; }
+
+#trend-form { margin-bottom: 18px; }

@@ -220,7 +220,7 @@ async function runScan(
         if (token) credentials.APPSCAN_TOKEN = token;
         else {
           credentials.APPSCAN_USER = config.get<string>("username", "admin");
-          const password = config.get<string>("password", "AppScanSecretPass2026!");
+          const password = config.get<string>("password", "");
           if (password) credentials.APPSCAN_PASSWORD = password;
         }
 

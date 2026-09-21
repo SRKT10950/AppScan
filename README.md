@@ -1,4 +1,4 @@
-# AppScan 0.3 — on-premises Salesforce quality platform
+# AppScan 0.4 — on-premises Salesforce quality platform
 
 AppScan scans Salesforce source and metadata on Ubuntu Server/Docker, with a web dashboard, CLI, and VS Code extension. It uses PMD for Apex analysis and duplication detection. This is an independent implementation, not SonarQube or a claim of complete SonarQube parity.
 
@@ -6,7 +6,14 @@ See [the feature matrix](docs/FEATURES.md) for implemented features, limited imp
 
 See [the 0.3 team and analysis guide](docs/TEAM_ANALYSIS.md) for setup, API contracts, retention semantics, and import limitations.
 
+See [the 0.4 analysis and audit guide](docs/ANALYSIS_OPERATIONS.md) for Visualforce, baseline SARIF, trends, and audit export.
+
 ## Features in this release
+
+- Opt-in PMD Visualforce security checks for pages/components, with baseline comparison.
+- Current/baseline SARIF comparison for imported findings, with matching-tool validation.
+- Filtered, paginated audit history and bounded JSON/CSV export.
+- Project/branch/PR quality charts with exact data tables and missing-value gaps.
 
 - Named shared profiles with inheritance and project overrides; group access.
 - Atomic bulk reviews, paginated issues/history, in-app notifications, and flat portfolios.
@@ -35,7 +42,7 @@ Install [Docker Engine and Docker Compose](https://docs.docker.com/engine/instal
 git clone https://github.com/SRKT10950/AppScan.git
 cd AppScan
 # Until this release is merged, use its review branch:
-git switch feature/team-analysis
+git switch feature/analysis-operations
 ./setup.sh
 ```
 

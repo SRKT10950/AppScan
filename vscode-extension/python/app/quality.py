@@ -10,7 +10,7 @@ import re
 CATEGORIES = ['security', 'errorprone', 'performance', 'design', 'bestpractices', 'codestyle']
 SEVERITIES = ['Critical', 'High', 'Medium', 'Low']
 DEFAULT_POLICY = {
-    'javascript': False, 'min_new_coverage': None, 'scope': 'overall', 'max_blockers': 0, 'min_coverage': None,
+    'visualforce': False, 'javascript': False, 'min_new_coverage': None, 'scope': 'overall', 'max_blockers': 0, 'min_coverage': None,
     'max_duplication': None, 'require_hotspot_review': False,
     'categories': ['security', 'errorprone', 'performance', 'design'],
     'disabled_rules': [], 'severity_overrides': {}, 'exclusions': [], 'cpd': False, 'store_source': False,
@@ -30,7 +30,7 @@ def validate_policy(value):
         v = policy[key]
         if v is not None and (type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 100):
             raise ValueError(key + ' must be null or a percentage from 0 to 100.')
-    for key in ('cpd', 'require_hotspot_review', 'store_source', 'javascript'):
+    for key in ('cpd', 'require_hotspot_review', 'store_source', 'javascript', 'visualforce'):
         if type(policy[key]) is not bool:
             raise ValueError(key + ' must be boolean.')
     for key in ('categories', 'disabled_rules', 'exclusions'):
@@ -63,6 +63,7 @@ def analysis_signature(policy):
     values={k:policy.get(k,DEFAULT_POLICY[k]) for k in ('categories','exclusions','disabled_rules')}
     # Preserve v0.2 scope fingerprints when the new engine is disabled.
     if policy.get('javascript'):values['javascript']=True
+    if policy.get('visualforce'):values['visualforce']=True
     return hashlib.sha256(json.dumps(values,sort_keys=True).encode()).hexdigest()
 
 
@@ -160,7 +161,7 @@ def evaluate(result, policy):
 def sarif(result):
     rules = sorted({f['rule'] for f in result['findings']})
     return {'version': '2.1.0', '$schema': 'https://json.schemastore.org/sarif-2.1.0.json', 'runs': [{
-        'tool': {'driver': {'name': 'AppScan', 'version': '0.3.0', 'rules': [{'id': r} for r in rules]}},
+        'tool': {'driver': {'name': 'AppScan', 'version': '0.4.0', 'rules': [{'id': r} for r in rules]}},
         'results': [{'ruleId': f['rule'], 'level': 'error' if f['severity'] in {'High', 'Critical'} else 'warning' if f['severity'] == 'Medium' else 'note',
                      'message': {'text': f['message']}, 'locations': [{'physicalLocation': {'artifactLocation': {'uri': __import__('urllib.parse', fromlist=['quote']).quote(f['path'], safe='/')},
                      'region': {'startLine': max(1, int(f.get('line') or 1))}}}],

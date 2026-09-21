@@ -87,6 +87,7 @@ async function loadProjects() {
     tokenSelect.value = $('project-select').value;
   }
   renderPolicy();
+  syncInsightProjects();
   updateContextLabels();
 }
 
@@ -138,6 +139,7 @@ function renderPolicy() {
     return;
   }
   const s = p.settings;
+  $('policy-visualforce').checked=!!s.visualforce;
   $('policy-javascript').checked=!!s.javascript; $('policy-new-coverage').value=s.min_new_coverage??'';
   $('policy-scope').value = s.scope;
   $('policy-blockers').value = s.max_blockers;
@@ -159,6 +161,7 @@ $('policy-form').onsubmit = runUI(async () => {
   const p = selectedProject();
   if (!p) throw new Error('Select a project first.');
   const settings = {
+    visualforce:$('policy-visualforce').checked,
     javascript:$('policy-javascript').checked,
     min_new_coverage:$('policy-new-coverage').value===''?null:Number($('policy-new-coverage').value),
     scope: $('policy-scope').value,
@@ -369,15 +372,7 @@ async function loadTokens() {
 async function loadAdmin() {
   const users = await jsonAPI('/api/users');
   $('user-list').replaceChildren(...users.map(u => el('p', `${u.username} · ${u.role} · ${u.enabled ? 'enabled' : 'disabled'}`)));
-  const events = await jsonAPI('/api/audit');
-  $('audit-rows').replaceChildren();
-  for (const e of events) {
-    const row = el('tr');
-    for (const v of [new Date(e.created).toLocaleString(), e.actor, e.action, e.target]) {
-      row.append(el('td', v));
-    }
-    $('audit-rows').append(row);
-  }
+  await loadAudit();
 }
 
 $('user-form').onsubmit = runUI(async () => {

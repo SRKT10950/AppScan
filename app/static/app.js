@@ -39,7 +39,7 @@ function notice(message = '') {
 
 function setRoute(hash) {
   const target = (hash || window.location.hash || '#overview').replace(/^#/, '');
-  const views = ['overview', 'projects', 'issues-panel', 'quality-settings', 'rules-panel', 'team', 'administration', 'new-scan', 'history'];
+  const views = ['overview', 'projects', 'issues-panel', 'quality-settings', 'rules-panel', 'team', 'administration', 'new-scan', 'trends', 'history'];
   const active = views.includes(target) ? target : 'overview';
 
   for (const a of document.querySelectorAll('nav a')) {
@@ -63,6 +63,7 @@ function setRoute(hash) {
     'rules-panel': 'Rule catalog',
     'administration': 'Administration & access',
     'new-scan': 'New analysis',
+    'trends': 'Quality trends',
     'history': 'Scan history'
   };
   const titleEl = $('header-view-title');
@@ -166,6 +167,7 @@ $('scan-form').onsubmit = async event => {
       branch: $('scan-branch').value,
       pull_request: $('scan-pr').value,
       revision: $('scan-revision').value,
+      baseline_external: $('baseline-sarif-file').files[0] ? JSON.parse(await $('baseline-sarif-file').files[0].text()) : null,
       external: $('sarif-file').files[0] ? JSON.parse(await $('sarif-file').files[0].text()) : null,
       coverage: $('coverage-file').files[0] ? JSON.parse(await $('coverage-file').files[0].text()) : null,
       current: await fileData($('current').files[0]),
@@ -252,7 +254,7 @@ async function openScan(id) {
     $('changes').append(row);
   }
   const coverage = $('coverage-view');
-  coverage.replaceChildren(el('p', 'Apex: PMD security, design, performance, and error-prone rules. XML: selected permission, flow, and endpoint checks. Secrets: heuristic detection. JavaScript/LWC: fixed ESLint rules when enabled in project policy. External SARIF is caller-supplied evidence.'));
+  coverage.replaceChildren(el('p', 'Apex: PMD security, design, performance, and error-prone rules. XML: selected permission, flow, and endpoint checks. Secrets: heuristic detection. JavaScript/LWC: fixed ESLint rules when enabled in project policy. Visualforce: PMD security rules when enabled. External SARIF is caller-supplied evidence.'));
   coverage.append(el('h2', 'Analysis errors'));
   if (!r.errors.length) coverage.append(el('p', 'No analysis errors reported.'));
   for (const error of r.errors) {

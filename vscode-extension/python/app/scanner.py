@@ -300,7 +300,9 @@ def run_cpd(files):
             return {'status': 'error', 'percent': None, 'groups': []}
 
 
-def scan(current, baseline, version, policy=None, coverage=None, external=None):
+def scan(current, baseline, version, policy=None, coverage=None, external=None, baseline_external=None):
+    if baseline_external is not None and (baseline is None or external is None):
+        raise ValueError('Baseline SARIF requires both baseline source and current SARIF.')
     policy = quality.validate_policy(policy or {})
     coverage_result = quality.coverage_metrics(coverage)
     rows, unsupported = changes(current, baseline)
@@ -311,10 +313,13 @@ def scan(current, baseline, version, policy=None, coverage=None, external=None):
     apex_findings, apex_errors, engine = run_pmd(analysis_files, policy)
     from .javascript import analyze
     js_findings, js_errors = analyze(analysis_files, policy['javascript'])
-    findings += apex_findings + js_findings
+    from .visualforce import analyze as analyze_vf
+    vf_findings, vf_errors, vf_status = analyze_vf(analysis_files, policy['visualforce'])
+    findings += apex_findings + js_findings + vf_findings
+    errors += vf_errors
     errors += js_errors
     errors += apex_errors
-    from .external import parse
+    from .external import parse, engines
     imported, import_errors = parse(external, analysis_files)
     findings += imported
     errors += import_errors
@@ -327,7 +332,12 @@ def scan(current, baseline, version, policy=None, coverage=None, external=None):
         base_findings, base_errors = metadata_checks(baseline_files)
         base_apex, base_apex_errors, _ = run_pmd(baseline_files, policy)
         base_js, js_errors = analyze(baseline_files, policy['javascript'])
-        base_apex += base_js
+        base_vf, vf_errors, _ = analyze_vf(baseline_files, policy['visualforce'])
+        base_imports, sarif_errors = parse(baseline_external, baseline_files)
+        if baseline_external is not None and set(engines(external)) != set(engines(baseline_external)):
+            sarif_errors.append({'message': 'Current and baseline SARIF must contain the same tool names, including empty runs.'})
+        base_apex += base_js + base_vf + base_imports
+        base_apex_errors += vf_errors + sarif_errors
         base_apex_errors += js_errors
         errors += [{'message': 'Baseline analysis incomplete: ' + e.get('message', 'engine error')} for e in base_errors + base_apex_errors]
         previous = {f['fingerprint'] for f in quality.enrich(base_findings + base_apex, baseline_files, policy)}
@@ -353,9 +363,13 @@ def scan(current, baseline, version, policy=None, coverage=None, external=None):
     from .new_coverage import measure
     result['new_coverage'] = measure(analysis_files, quality.filter_files(baseline, policy) if baseline is not None else None, coverage_result)
     result['external_report'] = external is not None
-    result['external_engines'] = ['SARIF:' + (re.sub(r'[^A-Za-z0-9_.-]', '_', str(run.get('tool', {}).get('driver', {}).get('name', 'external')))[:60] or 'external') for run in external['runs']] if external else []
+    result['external_engines'] = engines(external)
+    result['visualforce'] = vf_status
+    result['baseline_external_report'] = baseline_external is not None
     if external is not None:
-        result['warnings'].append('External SARIF is caller-supplied evidence. Suppressions are ignored. With an uploaded baseline, imported findings are considered new because no baseline SARIF was supplied.')
+        result['warnings'].append('External SARIF is caller-supplied evidence. Suppressions are ignored.')
+        if baseline is not None and baseline_external is None:
+            result['warnings'].append('No baseline SARIF supplied: imported findings count as new against the uploaded source baseline.')
     result.update(metrics=quality.code_metrics(analysis_files), coverage=coverage_result, duplication=duplication,
                   new_code_reference=reference, policy=policy)
     result['metrics']['new_findings'] = sum(f['is_new'] for f in findings)

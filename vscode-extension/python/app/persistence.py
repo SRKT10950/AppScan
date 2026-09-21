@@ -9,7 +9,7 @@ from . import platform, quality, governance
 from .scanner import scan
 
 
-def direct_scan(current, baseline, version, coverage, context, external=None):
+def direct_scan(current, baseline, version, coverage, context, external=None, baseline_external=None):
     name=context.get('project','')
     branch=context.get('branch','main')
     pr=context.get('pull_request','')
@@ -28,7 +28,7 @@ def direct_scan(current, baseline, version, coverage, context, external=None):
     platform.initialize()
     project=platform.ensure_project({'username':'local-cli','role':'admin'},name)
     policy=governance.effective_policy(project)
-    result=scan(current,baseline,version,policy,coverage,external)
+    result=scan(current,baseline,version,policy,coverage,external,baseline_external)
     sid=secrets.token_hex(16)
     with platform.STATE_LOCK, get_db() as db:
         db.execute('INSERT INTO scans VALUES (?,?,?,?,?)',(sid,name,platform.now(),'running','{}'))

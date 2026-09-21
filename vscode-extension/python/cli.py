@@ -180,7 +180,7 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
     headers = {
         "Content-Type": "application/json",
         "Authorization": "Basic " + base64.b64encode(f"{user}:{password}".encode()).decode(),
-        "User-Agent": "AppScan/0.3 (Salesforce VSCode)"
+        "User-Agent": "AppScan/0.4 (Salesforce VSCode)"
     }
     payload = {
         "project": project,
@@ -215,15 +215,15 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
             return res
     raise TimeoutError("Scan timed out waiting for server completion.")
 
-def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str, coverage=None, context=None, external=None):
+def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str, coverage=None, context=None, external=None, baseline_external=None):
     from app import scanner
     current = scanner.read_zip(base64.b64encode(current_zip).decode())
     baseline = scanner.read_zip(base64.b64encode(baseline_zip).decode()) if baseline_zip else None
     from app.db import get_pg_config
     if context and (get_pg_config() or os.environ.get("DATA_DIR")):
         from app.persistence import direct_scan
-        return direct_scan(current, baseline, api_version, coverage, context, external)
-    return scanner.scan(current, baseline, api_version, coverage=coverage, external=external)
+        return direct_scan(current, baseline, api_version, coverage, context, external, baseline_external)
+    return scanner.scan(current, baseline, api_version, coverage=coverage, external=external, baseline_external=baseline_external)
 
 def get_modified_classes(git_root: Path, baseline: str | None, subpath: str | None = None) -> list[str]:
     """Find Apex classes modified or added relative to baseline or uncommitted changes."""
@@ -263,6 +263,7 @@ def main():
     parser.add_argument("--branch", default="main", help="Branch namespace for server history")
     parser.add_argument("--pull-request", default="", help="Numeric PR identifier; isolated issue namespace")
     parser.add_argument("--revision", default="", help="Commit SHA for traceability")
+    parser.add_argument("--baseline-sarif", help="SARIF for baseline source; requires --sarif and a source baseline")
     parser.add_argument("--sarif", help="External SARIF 2.1.0 report to import")
     parser.add_argument("--coverage", help="LCOV or Salesforce/normalized JSON coverage report")
     parser.add_argument("--run-tests", "-t", action="store_true", help="Run selective test classes for modified Apex classes via Salesforce CLI")
@@ -291,6 +292,7 @@ def main():
         sys.exit(0)
 
     from app.coverage import parse_coverage
+    baseline_external = json.loads(Path(args.baseline_sarif).read_text()) if args.baseline_sarif else None
     external = json.loads(Path(args.sarif).read_text()) if args.sarif else None
     coverage = parse_coverage(Path(args.coverage).read_text()) if args.coverage else None
 
@@ -320,8 +322,6 @@ def main():
     server_url = args.server or os.environ.get("APPSCAN_URL") or env_vars.get("APPSCAN_URL") or "https://mhservice.co.in/appscan"
     user = os.environ.get("APPSCAN_USER") or env_vars.get("APPSCAN_USER", "admin")
     password = os.environ.get("APPSCAN_PASSWORD") or env_vars.get("APPSCAN_PASSWORD", "")
-    if not password and not os.environ.get("APPSCAN_TOKEN") and ("mhservice.co.in" in server_url or "192.168.50.109" in server_url):
-        password = "AppScanSecretPass2026!"
     project = args.project or git_root.name
 
     print(f"[*] AppScan Salesforce Code Analysis")
@@ -361,7 +361,7 @@ def main():
     if not args.offline:
         try:
             print(f"[*] Connecting to AppScan server at {server_url}...")
-            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage, "external":external})
+            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage, "external":external, "baseline_external":baseline_external})
             print(f"[*] Scan report successfully uploaded to server ({server_url}). Scan ID: {scan_result.get('server_scan_id')}")
         except Exception as exc:
             server_exc = exc
@@ -377,7 +377,7 @@ def main():
         sys.path.insert(0, str(appscan_dir))
         print("[*] Running scan via in-process engine...")
         scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version, coverage,
-                                      {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision}, external=external)
+                                      {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision}, external=external, baseline_external=baseline_external)
         scan_result["server_uploaded"] = False
         scan_result["server_url"] = server_url
         if server_exc is not None:
