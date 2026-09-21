@@ -27,6 +27,7 @@ def initialize():
             'CREATE TABLE IF NOT EXISTS retention_policies (project_id TEXT PRIMARY KEY, days INTEGER NOT NULL, keep_count INTEGER NOT NULL, source_days INTEGER NOT NULL)',
             'CREATE TABLE IF NOT EXISTS issue_index (id TEXT PRIMARY KEY, kind TEXT NOT NULL, severity TEXT NOT NULL, search_text TEXT NOT NULL)',
             'CREATE INDEX IF NOT EXISTS notifications_user ON notifications(username,created)',
+            'CREATE INDEX IF NOT EXISTS audit_created ON audit_events(created,id)',
             'CREATE INDEX IF NOT EXISTS scans_created ON scans(created,id)',
         ]:
             db.execute(sql)

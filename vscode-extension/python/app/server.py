@@ -13,7 +13,7 @@ import urllib.parse
 import zipfile
 from .scanner import read_zip, scan
 from .db import get_db, initialize_db
-from . import platform, quality, governance
+from . import platform, quality, governance, insights
 
 STATIC = Path(__file__).with_name('static')
 USER = os.environ.get('APPSCAN_USER', 'admin')
@@ -34,7 +34,7 @@ def worker(scan_id, payload):
             con.execute("UPDATE scans SET status='running' WHERE id=?", (scan_id,))
         current = read_zip(payload['current'])
         baseline = read_zip(payload['baseline']) if payload.get('baseline') else None
-        result = scan(current, baseline, payload['api_version'], payload['policy'], payload.get('coverage'), payload.get('external'))
+        result = scan(current, baseline, payload['api_version'], payload['policy'], payload.get('coverage'), payload.get('external'), payload.get('baseline_external'))
         with platform.STATE_LOCK, get_db() as con:
             if payload['policy'].get('store_source'):
                 for path, content in quality.filter_files(current, payload['policy']).items():
@@ -84,7 +84,7 @@ def valid_text(value, label, maximum=100, required=True):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'AppScan/0.3'
+    server_version = 'AppScan/0.4'
 
     def setup(self):
         super().setup()
@@ -178,13 +178,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
-        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/team.js': ('team.js', 'text/javascript; charset=utf-8'), '/platform.js': ('platform.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/insights.js': ('insights.js', 'text/javascript; charset=utf-8'), '/team.js': ('team.js', 'text/javascript; charset=utf-8'), '/platform.js': ('platform.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
         if path in assets:
             filename, kind = assets[path]
             return self.send(200, (STATIC / filename).read_bytes(), kind)
         if not self.authorized():
             return
         q = self.query()
+        if path == '/api/audit/export':
+            body,kind,filename=insights.audit_export(self.user,q)
+            return self.send(200,body,kind,filename)
+        if path == '/api/audit' and 'page_size' in q:
+            return self.send(200,insights.audit_page(self.user,q))
+        match=re.fullmatch(r'/api/projects/([a-f0-9]{32})/trends',path)
+        if match:return self.send(200,insights.trends(self.user,match[1],q))
         if path == '/api/profiles':
             return self.send(200, governance.list_profiles(self.user))
         if path == '/api/groups':
@@ -357,9 +364,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Current source ZIP is required.')
             if payload.get('baseline') is not None and not isinstance(payload['baseline'], str):
                 raise ValueError('Baseline must be a base64 ZIP string.')
+            if payload.get('baseline_external') is not None and (not payload.get('baseline') or payload.get('external') is None):
+                raise ValueError('Baseline SARIF requires both baseline source and current SARIF.')
             quality.coverage_metrics(payload.get('coverage'))
             policy = governance.effective_policy(project)
-            payload = {k: payload.get(k) for k in ('current', 'baseline', 'coverage', 'external')}
+            payload = {k: payload.get(k) for k in ('current', 'baseline', 'coverage', 'external', 'baseline_external')}
             payload.update(api_version=version, policy=policy)
             scan_id = secrets.token_hex(16)
             with get_db() as con:

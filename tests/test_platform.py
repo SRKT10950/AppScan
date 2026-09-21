@@ -300,6 +300,23 @@ class AccessTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as e:self.req('/api/projects/'+self.project['id']+'/retention',{'apply':True,'plan_hash':'stale'})
         self.assertEqual(e.exception.code,400)
 
+    def test_insights_routes_and_audit_export_permissions(self):
+        page=json.load(self.req('/api/audit?page_size=1'))
+        self.assertIn('snapshot',page)
+        exported=self.req('/api/audit/export?format=json&action=project.create')
+        self.assertIn('appscan-audit.json',exported.headers['Content-Disposition'])
+        self.assertGreater(json.load(exported)['count'],0)
+        exported=self.req('/api/audit/export?format=csv&action=project.create')
+        self.assertIn('text/csv',exported.headers['Content-Type'])
+        self.assertIn(b'project.create',exported.read())
+        for endpoint in ['/api/audit?page_size=1','/api/audit/export?format=json']:
+            with self.assertRaises(urllib.error.HTTPError) as e:self.req(endpoint,user='analyst')
+            self.assertEqual(e.exception.code,403)
+        trend=json.load(self.req('/api/projects/'+self.project['id']+'/trends',user='analyst'))
+        self.assertEqual(trend['branch'],'main')
+        with self.assertRaises(urllib.error.HTTPError) as e:self.req('/api/projects/'+self.other['id']+'/trends',user='analyst')
+        self.assertEqual(e.exception.code,403)
+
     def test_missing_project_id_returns_400(self):
         with self.assertRaises(urllib.error.HTTPError) as e:
             self.req('/api/issues')

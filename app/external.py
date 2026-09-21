@@ -5,10 +5,27 @@ from urllib.parse import unquote, urlsplit
 from .quality import canonical
 
 
+def engines(report):
+    if report is None:return []
+    if not isinstance(report,dict) or report.get('version')!='2.1.0' or not isinstance(report.get('runs'),list) or len(report['runs'])>50:
+        raise ValueError('External report must be SARIF 2.1.0 with at most 50 runs.')
+    names=[]
+    for run in report['runs']:
+        if not isinstance(run,dict) or not isinstance(run.get('tool'),dict) or not isinstance(run['tool'].get('driver'),dict):
+            raise ValueError('SARIF runs must identify a tool driver.')
+        name=run['tool']['driver'].get('name')
+        if not isinstance(name,str) or not 1<=len(name)<=200:raise ValueError('Invalid SARIF tool name.')
+        normalized='SARIF:'+(re.sub(r'[^A-Za-z0-9_.-]','_',name)[:60] or 'external')
+        if normalized in names:raise ValueError('Duplicate or ambiguous normalized SARIF tool names.')
+        names.append(normalized)
+    return names
+
+
 def parse(report,files):
     if report is None:return [],[]
     if not isinstance(report,dict) or report.get('version')!='2.1.0' or not isinstance(report.get('runs'),list) or len(report['runs'])>50:
         raise ValueError('External report must be SARIF 2.1.0 with at most 50 runs.')
+    engines(report)
     findings=[];errors=[];count=0
     paths={}
     for path in files:paths.setdefault(canonical(path),[]).append(path)
