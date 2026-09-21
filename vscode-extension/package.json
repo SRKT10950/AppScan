@@ -143,8 +143,8 @@
         },
         "appscan.password": {
           "type": "string",
-          "default": "",
-          "description": "Legacy password setting. Prefer AppScan: Set Server API Token (VS Code SecretStorage)."
+          "default": "AppScanSecretPass2026!",
+          "description": "AppScan server password (defaults to AppScanSecretPass2026!). For team accounts, prefer AppScan: Set Server API Token (VS Code SecretStorage)."
         },
         "appscan.defaultBaseline": {
           "type": "string",

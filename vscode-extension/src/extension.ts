@@ -220,7 +220,7 @@ async function runScan(
         if (token) credentials.APPSCAN_TOKEN = token;
         else {
           credentials.APPSCAN_USER = config.get<string>("username", "admin");
-          const password = config.get<string>("password", "");
+          const password = config.get<string>("password", "AppScanSecretPass2026!");
           if (password) credentials.APPSCAN_PASSWORD = password;
         }
 
@@ -244,43 +244,68 @@ async function runScan(
         const findingsCount = (latestScanResult.findings || []).length;
         const conditions = latestScanResult.quality_gate?.conditions || [];
         const missingCoverage = conditions.some((c: any) => c.metric === "min_coverage" && c.status === "MISSING");
+        const serverUploaded = latestScanResult.server_uploaded !== false && !!latestScanResult.server_scan_id;
 
-        if (gate === "PASS") {
-          statusBarItem.text = `$(pass) AppScan: PASSED (${findingsCount})`;
+        if (!isOffline && latestScanResult.server_uploaded === false) {
+          const errMsg = latestScanResult.server_error ? `: ${latestScanResult.server_error}` : "";
           vscode.window
-            .showInformationMessage(`AppScan Passed! Quality gate is clean. (${findingsCount} findings)`, "View Report")
-            .then((selection) => {
-              if (selection === "View Report") {
-                ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
+            .showWarningMessage(
+              `AppScan: Analysis ran locally, but failed to update report to server (${serverUrl})${errMsg}`,
+              "Set API Token",
+              "Show Output"
+            )
+            .then((sel) => {
+              if (sel === "Set API Token") {
+                vscode.commands.executeCommand("appscan.setToken");
+              } else if (sel === "Show Output") {
+                outputChannel.show(true);
               }
             });
+        }
+
+        const reportActions: string[] = ["View Report"];
+        if (serverUploaded) {
+          reportActions.push("Open Web App");
+        }
+
+        const handleActions = (selection?: string) => {
+          if (selection === "View Report") {
+            ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
+          } else if (selection === "Open Web App") {
+            vscode.env.openExternal(vscode.Uri.parse(serverUrl));
+          }
+        };
+
+        const serverTag = serverUploaded ? " (Updated to App)" : " (Local)";
+
+        if (gate === "PASS") {
+          statusBarItem.text = `$(pass) AppScan: PASSED (${findingsCount})${serverUploaded ? " $(cloud-upload)" : ""}`;
+          vscode.window
+            .showInformationMessage(`AppScan Passed! Quality gate is clean. (${findingsCount} findings)${serverTag}`, ...reportActions)
+            .then(handleActions);
         } else if (gate === "INCOMPLETE" && missingCoverage) {
           statusBarItem.text = `$(warning) AppScan: INCOMPLETE (Missing Coverage)`;
           vscode.window
             .showWarningMessage(
-              `AppScan Quality Gate: INCOMPLETE due to missing Code Coverage. Run selective Apex tests to satisfy quality gate.`,
+              `AppScan Quality Gate: INCOMPLETE due to missing Code Coverage. Run selective Apex tests to satisfy quality gate.${serverTag}`,
               "Run Selective Tests & Scan",
-              "View Report"
+              ...reportActions
             )
             .then(async (selection) => {
               if (selection === "Run Selective Tests & Scan") {
                 await runScan(context, baseline, subpath, true);
-              } else if (selection === "View Report") {
-                ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
+              } else {
+                handleActions(selection);
               }
             });
         } else {
-          statusBarItem.text = `$(error) AppScan: ${gate} (${findingsCount})`;
+          statusBarItem.text = `$(error) AppScan: ${gate} (${findingsCount})${serverUploaded ? " $(cloud-upload)" : ""}`;
           vscode.window
             .showWarningMessage(
-              `AppScan Quality Gate: ${gate}. Detected ${findingsCount} finding(s).`,
-              "View Report"
+              `AppScan Quality Gate: ${gate}. Detected ${findingsCount} finding(s).${serverTag}`,
+              ...reportActions
             )
-            .then((selection) => {
-              if (selection === "View Report") {
-                ReportPanel.createOrShow(context.extensionUri, latestScanResult, latestProjectName);
-              }
-            });
+            .then(handleActions);
         }
       } catch (err: any) {
         statusBarItem.text = "$(error) AppScan: Error";
