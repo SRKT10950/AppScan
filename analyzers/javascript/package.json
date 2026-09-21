@@ -1,0 +1,1 @@
+{"name":"appscan-javascript-analyzer","private":true,"version":"0.3.0","type":"module","dependencies":{"eslint":"9.39.1","@babel/core":"7.28.5","@babel/eslint-parser":"7.28.5","@babel/plugin-syntax-decorators":"7.27.1"}}

@@ -64,6 +64,7 @@ async function loadPlatform() {
   try { await loadTokens(); } catch {}
   if (currentUser.role === 'admin') await loadAdmin();
   await loadIssues();
+  await loadTeam();
   updateContextLabels();
 }
 
@@ -90,6 +91,7 @@ async function loadProjects() {
 }
 
 async function projectChanged() {
+  historyCursor='';
   const p = selectedProject();
   if (p) $('project').value = p.name;
   const tokenSelect = $('token-project');
@@ -103,6 +105,7 @@ async function projectChanged() {
 $('project-select').onchange = runUI(projectChanged);
 
 $('branch-filter').onchange = runUI(async () => {
+  historyCursor='';
   updateContextLabels();
   await refresh();
   await loadIssues();
@@ -135,6 +138,7 @@ function renderPolicy() {
     return;
   }
   const s = p.settings;
+  $('policy-javascript').checked=!!s.javascript; $('policy-new-coverage').value=s.min_new_coverage??'';
   $('policy-scope').value = s.scope;
   $('policy-blockers').value = s.max_blockers;
   $('policy-coverage').value = s.min_coverage ?? '';
@@ -155,6 +159,8 @@ $('policy-form').onsubmit = runUI(async () => {
   const p = selectedProject();
   if (!p) throw new Error('Select a project first.');
   const settings = {
+    javascript:$('policy-javascript').checked,
+    min_new_coverage:$('policy-new-coverage').value===''?null:Number($('policy-new-coverage').value),
     scope: $('policy-scope').value,
     max_blockers: Number($('policy-blockers').value),
     min_coverage: $('policy-coverage').value === '' ? null : Number($('policy-coverage').value),
@@ -180,6 +186,7 @@ function renderQualitySummary(r) {
   box.replaceChildren();
   const values = [
     ['New findings', r.metrics?.new_findings ?? '—'],
+    ['Changed-line coverage',r.new_coverage?.percent==null?r.new_coverage?.status||'Not supplied':r.new_coverage.percent+'%'],
     ['Code lines', r.metrics?.lines ?? '—'],
     ['Imported coverage', r.coverage?.percent == null ? 'Not supplied' : r.coverage.percent + '%'],
     ['Apex duplication', r.duplication?.percent == null ? r.duplication?.status || 'Not measured' : r.duplication.percent + '%']
@@ -236,7 +243,9 @@ function renderQualitySummary(r) {
   }
 }
 
-async function loadIssues() {
+let issueNext=null;
+async function loadIssues(cursor='') {
+  if(typeof cursor!=='string')cursor='';issueNext=null;$('issues-next').disabled=true;
   const p = selectedProject(), body = $('issue-rows');
   body.replaceChildren();
   if (!p) {
@@ -247,13 +256,13 @@ async function loadIssues() {
     return;
   }
   const query = new URLSearchParams({
-    project_id: p.id,
+    page_size:'50',cursor,project_id: p.id,
     branch: $('branch-filter').value.trim(),
     status: $('issue-status').value,
     kind: $('issue-kind').value,
     search: $('issue-search').value
   });
-  const rows = await jsonAPI('/api/issues?' + query);
+  const page=await jsonAPI('/api/issues?'+query),rows=page.items;issueNext=page.next_cursor;$('issues-next').disabled=!issueNext;$('issue-page-info').textContent=`${page.total} matching issues · ${rows.length} shown`;
   if (!rows.length) {
     const row = el('tr'), cell = el('td', 'No matching issues. Run a scan or change filters.');
     cell.colSpan = 5;
@@ -268,7 +277,7 @@ async function loadIssues() {
     const button = el('button', 'Review', 'quiet');
     button.disabled = currentUser.role === 'viewer';
     button.onclick = runUI(() => openReview(issue));
-    action.append(button);
+    const check=document.createElement('input');check.type='checkbox';check.className='issue-select';check.value=issue.id;check.disabled=currentUser.role==='viewer';check.setAttribute('aria-label','Select '+f.rule);action.append(check,button);
     row.append(severity, detail, state, el('td', issue.assignee || 'Unassigned'), action);
     body.append(row);
   }
@@ -384,3 +393,5 @@ $('user-form').onsubmit = runUI(async () => {
 });
 
 $('close-source').onclick = () => $('source-dialog').close();
+
+$('issues-first').onclick=runUI(()=>loadIssues());$('issues-next').onclick=runUI(()=>loadIssues(issueNext||''));

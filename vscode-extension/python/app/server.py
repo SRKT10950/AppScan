@@ -13,7 +13,7 @@ import urllib.parse
 import zipfile
 from .scanner import read_zip, scan
 from .db import get_db, initialize_db
-from . import platform, quality
+from . import platform, quality, governance
 
 STATIC = Path(__file__).with_name('static')
 USER = os.environ.get('APPSCAN_USER', 'admin')
@@ -34,8 +34,8 @@ def worker(scan_id, payload):
             con.execute("UPDATE scans SET status='running' WHERE id=?", (scan_id,))
         current = read_zip(payload['current'])
         baseline = read_zip(payload['baseline']) if payload.get('baseline') else None
-        result = scan(current, baseline, payload['api_version'], payload['policy'], payload.get('coverage'))
-        with get_db() as con:
+        result = scan(current, baseline, payload['api_version'], payload['policy'], payload.get('coverage'), payload.get('external'))
+        with platform.STATE_LOCK, get_db() as con:
             if payload['policy'].get('store_source'):
                 for path, content in quality.filter_files(current, payload['policy']).items():
                     if path.endswith(('.cls', '.trigger', '.js', '.ts', '.page', '.component')):
@@ -84,7 +84,7 @@ def valid_text(value, label, maximum=100, required=True):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'AppScan/0.2'
+    server_version = 'AppScan/0.3'
 
     def setup(self):
         super().setup()
@@ -178,13 +178,25 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Length', '0')
             self.end_headers()
             return
-        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/platform.js': ('platform.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
+        assets = {'/': ('index.html', 'text/html; charset=utf-8'), '/app.js': ('app.js', 'text/javascript; charset=utf-8'), '/team.js': ('team.js', 'text/javascript; charset=utf-8'), '/platform.js': ('platform.js', 'text/javascript; charset=utf-8'), '/style.css': ('style.css', 'text/css; charset=utf-8')}
         if path in assets:
             filename, kind = assets[path]
             return self.send(200, (STATIC / filename).read_bytes(), kind)
         if not self.authorized():
             return
         q = self.query()
+        if path == '/api/profiles':
+            return self.send(200, governance.list_profiles(self.user))
+        if path == '/api/groups':
+            self.admin()
+            with get_db() as db:
+                rows=db.execute('SELECT * FROM user_groups ORDER BY name').fetchall()
+                for row in rows:row['members']=[r['username'] for r in db.execute('SELECT username FROM group_members WHERE group_id=? ORDER BY username',(row['id'],)).fetchall()]
+            return self.send(200,rows)
+        if path == '/api/notifications':
+            return self.send(200,governance.notifications(self.user))
+        if path == '/api/portfolios':
+            return self.send(200,governance.portfolios(self.user))
         if path == '/api/me':
             return self.send(200, self.user)
         if path == '/api/projects':
@@ -203,6 +215,10 @@ class Handler(BaseHTTPRequestHandler):
             with get_db() as db:
                 rows = db.execute('SELECT username,role,enabled FROM app_users ORDER BY username' if path == '/api/users' else 'SELECT * FROM audit_events ORDER BY created DESC LIMIT 200').fetchall()
             return self.send(200, rows)
+        if path == '/api/scans' and 'page_size' in q:
+            return self.send(200,governance.scan_page(self.user,q))
+        if path == '/api/issues' and 'page_size' in q:
+            return self.send(200,governance.issue_page(self.user,q))
         if path == '/api/scans':
             projects = platform.list_projects(self.user)
             ids = [p['id'] for p in projects if not q.get('project_id') or p['id'] == q['project_id']]
@@ -281,6 +297,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/scans':
             return self.submit_scan()
         payload = self.read_json(128 * 1024)
+        actions={'/api/profiles':governance.save_profile,'/api/groups':governance.save_group,'/api/portfolios':governance.save_portfolio,'/api/issues/bulk':governance.bulk_review}
+        if path in actions:
+            return self.send(200,actions[path](self.user,payload))
+        match=re.fullmatch(r'/api/projects/([a-f0-9]{32})/(profile|groups|retention-policy|retention)',path)
+        if match:
+            actions={'profile':governance.bind_profile,'groups':governance.bind_groups,'retention-policy':governance.retention_policy,'retention':governance.retention}
+            return self.send(200,actions[match[2]](self.user,match[1],payload) or {'saved':True})
+        match=re.fullmatch(r'/api/notifications/([a-f0-9]{32})/read',path)
+        if match:
+            with get_db() as db:db.execute('UPDATE notifications SET seen=1 WHERE id=? AND username=?',(match[1],self.user['username']))
+            return self.send(200,{'saved':True})
         if path == '/api/projects':
             self.admin()
             row = platform.ensure_project(self.user, valid_text(payload.get('name'), 'Project name'))
@@ -331,8 +358,8 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get('baseline') is not None and not isinstance(payload['baseline'], str):
                 raise ValueError('Baseline must be a base64 ZIP string.')
             quality.coverage_metrics(payload.get('coverage'))
-            policy = json.loads(project['settings'])
-            payload = {k: payload.get(k) for k in ('current', 'baseline', 'coverage')}
+            policy = governance.effective_policy(project)
+            payload = {k: payload.get(k) for k in ('current', 'baseline', 'coverage', 'external')}
             payload.update(api_version=version, policy=policy)
             scan_id = secrets.token_hex(16)
             with get_db() as con:

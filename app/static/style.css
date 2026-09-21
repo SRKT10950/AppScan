@@ -1149,3 +1149,9 @@ footer {
     flex-direction: column;
   }
 }
+
+/* Team administration forms share the routed dashboard layout. */
+#team-admin form { margin-top: 16px; }
+#team-admin form > button { align-self: end; justify-self: start; }
+#team-admin select[multiple] { min-height: 110px; }
+#team-catalog p { overflow-wrap: anywhere; }

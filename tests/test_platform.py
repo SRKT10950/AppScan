@@ -276,6 +276,30 @@ class AccessTests(unittest.TestCase):
         self.assertTrue(any(e['action']=='project.create' for e in events))
         with self.req('/appscan/') as r:self.assertEqual(r.status,200)
 
+    def test_team_routes_and_admin_restrictions(self):
+        profile=json.load(self.req('/api/profiles',{'name':'HTTP shared','overrides':{'javascript':True}}))
+        self.req('/api/projects/'+self.project['id']+'/profile',{'profile_id':profile['id']})
+        self.assertTrue(next(p for p in json.load(self.req('/api/projects')) if p['id']==self.project['id'])['settings']['javascript'])
+        self.req('/api/projects/'+self.project['id']+'/profile',{})
+        platform.save_project(ADMIN,self.project['id'],{'settings':{},'members':['analyst']})
+        self.assertTrue(json.load(self.req('/api/profiles')))
+        group=json.load(self.req('/api/groups',{'name':'HTTP group','members':['analyst']}))
+        self.req('/api/projects/'+self.project['id']+'/groups',{'groups':[group['id']]})
+        self.assertTrue(json.load(self.req('/api/groups')))
+        self.req('/api/portfolios',{'name':'HTTP portfolio','projects':[self.project['id']]})
+        self.assertTrue(json.load(self.req('/api/portfolios',user='analyst')))
+        self.assertIsInstance(json.load(self.req('/api/notifications')),list)
+        page=json.load(self.req('/api/scans?page_size=1'))
+        self.assertIn('next_cursor',page)
+        self.assertIn('total',json.load(self.req('/api/issues?project_id='+self.project['id']+'&page_size=1')))
+        plan=json.load(self.req('/api/projects/'+self.project['id']+'/retention',{}))
+        self.assertEqual(plan['delete_scans'],[])
+        for path in ['/api/profiles','/api/groups']:
+            with self.assertRaises(urllib.error.HTTPError) as e:self.req(path,user='analyst')
+            self.assertEqual(e.exception.code,403)
+        with self.assertRaises(urllib.error.HTTPError) as e:self.req('/api/projects/'+self.project['id']+'/retention',{'apply':True,'plan_hash':'stale'})
+        self.assertEqual(e.exception.code,400)
+
     def test_missing_project_id_returns_400(self):
         with self.assertRaises(urllib.error.HTTPError) as e:
             self.req('/api/issues')

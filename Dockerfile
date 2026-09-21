@@ -1,3 +1,9 @@
+FROM node:22-bookworm-slim AS javascript
+WORKDIR /opt/appscan-javascript
+COPY analyzers/javascript/package*.json ./
+RUN npm ci --omit=dev --ignore-scripts
+COPY analyzers/javascript/scan.mjs ./
+
 FROM python:3.12-slim-bookworm
 ARG PMD_VERSION=7.17.0
 ARG PMD_SHA256=440f6855769c1a651cebd735133cba188df077881af31bd923766b869482bebd
@@ -8,6 +14,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jre-
     && rm /tmp/pmd.zip && apt-get purge -y curl unzip && apt-get autoremove -y && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home appscan && mkdir /data && chown appscan:appscan /data \
     && pip install --no-cache-dir psycopg2-binary
+COPY --from=javascript /usr/local/bin/node /usr/local/bin/node
+COPY --from=javascript /opt/appscan-javascript /opt/appscan-javascript
+ENV APPSCAN_JS_RUNNER=/opt/appscan-javascript/scan.mjs
 WORKDIR /srv
 COPY --chown=appscan:appscan app /srv/app
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data PMD_BIN=/opt/pmd/bin/pmd JAVA_TOOL_OPTIONS=-Xmx768m

@@ -6,6 +6,9 @@ import hmac
 import json
 import re
 import secrets
+import threading
+
+STATE_LOCK = threading.RLock()
 from .db import get_db
 from .quality import DEFAULT_POLICY, validate_policy, evaluate, analysis_signature
 
@@ -37,6 +40,10 @@ def initialize():
             db.execute('INSERT INTO projects VALUES (?,?,?,?,?) ON CONFLICT (id) DO NOTHING', (pid, name, json.dumps(DEFAULT_POLICY), '[]', now()))
         for row in db.execute('SELECT s.id,s.project FROM scans s LEFT JOIN scan_context c ON s.id=c.scan_id WHERE c.scan_id IS NULL').fetchall():
             db.execute('INSERT INTO scan_context VALUES (?,?,?,?,?,?,?)', (row['id'], project_id(row['project'] or 'Imported project'), 'main', '', '', 'legacy', json.dumps(DEFAULT_POLICY)))
+
+
+    from . import governance
+    governance.initialize()
 
 
 def project_id(name):
@@ -98,7 +105,8 @@ def can_access(user, project, write=False):
         return False
     if write and (user['role'] == 'viewer' or user.get('token_scope') == 'read'):
         return False
-    return user['role'] == 'admin' or user['username'] in json.loads(project['members'])
+    from .governance import group_access
+    return user['role'] == 'admin' or user['username'] in json.loads(project['members']) or group_access(user, project['id'])
 
 
 def project_for(user, pid, write=False):
@@ -124,7 +132,15 @@ def ensure_project(user, name):
 def list_projects(user):
     with get_db() as db:
         rows = db.execute('SELECT * FROM projects ORDER BY name').fetchall()
-    return [dict(r, settings=json.loads(r['settings']), members=json.loads(r['members'])) for r in rows if can_access(user, r)]
+    from .governance import effective_policy
+    visible=[]
+    for r in rows:
+        if not can_access(user,r):continue
+        with get_db() as db:
+            link=db.execute('SELECT * FROM project_profiles WHERE project_id=?',(r['id'],)).fetchone()
+            groups=[g['group_id'] for g in db.execute('SELECT group_id FROM project_groups WHERE project_id=?',(r['id'],)).fetchall()]
+        visible.append(dict(r,settings=effective_policy(r),members=json.loads(r['members']),profile_id=link['profile_id'] if link else '',groups=groups))
+    return visible
 
 
 def save_project(user, pid, payload):
@@ -139,13 +155,19 @@ def save_project(user, pid, payload):
         users = {r['username'] for r in db.execute('SELECT username FROM app_users WHERE enabled=1').fetchall()}
         if set(members) - users:
             raise ValueError('All project members must be enabled users.')
+        link=db.execute('SELECT profile_id FROM project_profiles WHERE project_id=?',(pid,)).fetchone()
+        if link:
+            from .governance import profile_policy
+            base=profile_policy(link['profile_id'],db=db)
+            overrides={k:v for k,v in settings.items() if v!=base[k]}
+            db.execute('UPDATE project_profiles SET overrides=? WHERE project_id=?',(json.dumps(overrides),pid))
         db.execute('UPDATE projects SET settings=?,members=? WHERE id=?', (json.dumps(settings), json.dumps(members), pid))
         audit(db, user['username'], 'project.settings', pid, {'settings': settings, 'members': members})
 
 
 def apply_result(db, scan_id, result):
     context = db.execute('SELECT * FROM scan_context WHERE scan_id=?', (scan_id,)).fetchone()
-    policy = json.loads(context['policy'])
+    policy = validate_policy(json.loads(context['policy']))
     if result['errors']:
         # A failed analysis cannot establish the new-code reference or change lifecycle.
         result['quality_gate'] = evaluate(result, policy)
@@ -155,6 +177,8 @@ def apply_result(db, scan_id, result):
         platform_note = 'Issue history was not updated because analysis was incomplete.'
         result['warnings'].append(platform_note)
         audit(db, context['actor'], 'scan.incomplete', scan_id)
+        from .governance import scan_notifications
+        scan_notifications(db,context,result)
         return
     branch = context['branch'] if not context['pull_request'] else 'pr:' + context['pull_request'] + ':' + context['branch']
     prior = db.execute('SELECT * FROM issues WHERE project_id=? AND branch=?', (context['project_id'], branch)).fetchall()
@@ -174,11 +198,16 @@ def apply_result(db, scan_id, result):
             issue_id = secrets.token_hex(16)
             f['issue_id'] = issue_id
             db.execute('INSERT INTO issues VALUES (?,?,?,?,?,?,?,?,?)', (issue_id, context['project_id'], branch, key, scan_id, scan_id, 'open', '', json.dumps(f)))
+        from .governance import index_issue
+        index_issue(db,f['issue_id'],f)
     # Do not close issues on broken or changed-scope scans.
     prev = db.execute("SELECT c.policy FROM scan_context c JOIN scans s ON s.id=c.scan_id WHERE c.project_id=? AND c.branch=? AND c.pull_request=? AND s.status='complete' AND s.id<>? ORDER BY s.created DESC LIMIT 1", (context['project_id'], context['branch'], context['pull_request'], scan_id)).fetchone()
     same_scope = not prev or json.loads(prev['policy']) == policy
     if not result['errors'] and same_scope:
         for key, row in old.items():
+            old_engine=json.loads(row['finding']).get('engine','')
+            if old_engine.startswith('SARIF:') and old_engine not in result.get('external_engines',[]):
+                continue
             if key not in current and row['status'] != 'fixed' and json.loads(row['finding']).get('analysis_signature') == analysis_signature(policy):
                 db.execute("UPDATE issues SET status='fixed' WHERE id=?", (row['id'],))
                 audit(db, 'scanner', 'issue.fixed', row['id'], {'scan_id': scan_id})
@@ -189,34 +218,38 @@ def apply_result(db, scan_id, result):
     result['policy'] = policy
     result['metrics']['new_findings'] = sum(f['is_new'] for f in result['findings'])
     audit(db, context['actor'], 'scan.complete', scan_id, {'gate': result['gate']})
+    from .governance import scan_notifications
+    scan_notifications(db,context,result)
 
 
 def change_issue(user, iid, payload):
-    with get_db() as db:
-        row = db.execute('SELECT * FROM issues WHERE id=?', (iid,)).fetchone()
-    if not row:
-        raise ValueError('Issue not found.')
-    project_for(user, row['project_id'], write=True)
-    f = json.loads(row['finding'])
-    allowed = {'open', 'confirmed', 'accepted', 'false_positive'} | ({'safe'} if f.get('kind') == 'hotspot' else set())
-    status = payload.get('status', row['status'])
-    if status not in allowed:
-        raise ValueError('Invalid status; fixed is assigned by a successful rescan.')
-    comment = payload.get('comment', '').strip()
-    if not comment or len(comment) > 4000:
-        raise ValueError('A review comment of 1–4000 characters is required.')
-    assignee = payload.get('assignee', row['assignee'])
-    if not isinstance(assignee, str):
-        raise ValueError('Invalid assignee.')
-    with get_db() as db:
-        if assignee:
-            target = db.execute('SELECT username,role,enabled FROM app_users WHERE username=?', (assignee,)).fetchone()
-            project = db.execute('SELECT * FROM projects WHERE id=?', (row['project_id'],)).fetchone()
-            if not target or not target['enabled'] or not can_access(target, project):
-                raise ValueError('Assignee must be an enabled project member.')
-        db.execute('UPDATE issues SET status=?,assignee=? WHERE id=?', (status, assignee, iid))
-        db.execute('INSERT INTO issue_comments VALUES (?,?,?,?,?)', (secrets.token_hex(16), iid, user['username'], now(), comment))
-        audit(db, user['username'], 'issue.review', iid, {'from': row['status'], 'to': status, 'assignee': assignee})
+    with STATE_LOCK, get_db() as db:
+        review_in_transaction(db,user,iid,payload)
+
+
+def review_in_transaction(db,user,iid,payload):
+    if 'token_scope' in user:raise PermissionError('Password login required for reviews.')
+    row=db.execute('SELECT * FROM issues WHERE id=?',(iid,)).fetchone()
+    if not row:raise ValueError('Issue not found.')
+    project=db.execute('SELECT * FROM projects WHERE id=?',(row['project_id'],)).fetchone()
+    if not can_access(user,project,write=True):raise PermissionError('Project is not accessible for review.')
+    f=json.loads(row['finding'])
+    allowed={'open','confirmed','accepted','false_positive'} | ({'safe'} if f.get('kind')=='hotspot' else set())
+    status=payload.get('status',row['status'])
+    if status not in allowed:raise ValueError('Invalid status; fixed is assigned by a successful rescan.')
+    comment=payload.get('comment','')
+    if not isinstance(comment,str) or not 1<=len(comment.strip())<=4000:raise ValueError('A review comment of 1–4000 characters is required.')
+    assignee=payload.get('assignee',row['assignee'])
+    if not isinstance(assignee,str):raise ValueError('Invalid assignee.')
+    if assignee:
+        target=db.execute('SELECT username,role,enabled FROM app_users WHERE username=?',(assignee,)).fetchone()
+        if not target or not target['enabled'] or not can_access(target,project):raise ValueError('Assignee must be an enabled project member.')
+    db.execute('UPDATE issues SET status=?,assignee=? WHERE id=?',(status,assignee,iid))
+    db.execute('INSERT INTO issue_comments VALUES (?,?,?,?,?)',(secrets.token_hex(16),iid,user['username'],now(),comment.strip()))
+    audit(db,user['username'],'issue.review',iid,{'from':row['status'],'to':status,'assignee':assignee})
+    if assignee and assignee!=user['username']:
+        from .governance import notify
+        notify(db,assignee,row['project_id'],'Issue assigned or reviewed: '+f['rule'],iid)
 
 
 def manage_user(actor, payload, admin_user):

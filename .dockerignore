@@ -5,3 +5,6 @@ __pycache__
 tests
 examples
 *.zip
+
+**/node_modules
+qa-tools

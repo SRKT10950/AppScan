@@ -300,7 +300,7 @@ def run_cpd(files):
             return {'status': 'error', 'percent': None, 'groups': []}
 
 
-def scan(current, baseline, version, policy=None, coverage=None):
+def scan(current, baseline, version, policy=None, coverage=None, external=None):
     policy = quality.validate_policy(policy or {})
     coverage_result = quality.coverage_metrics(coverage)
     rows, unsupported = changes(current, baseline)
@@ -309,8 +309,15 @@ def scan(current, baseline, version, policy=None, coverage=None):
     analysis_files = quality.filter_files(current, policy)
     findings, errors = metadata_checks(analysis_files)
     apex_findings, apex_errors, engine = run_pmd(analysis_files, policy)
-    findings += apex_findings
+    from .javascript import analyze
+    js_findings, js_errors = analyze(analysis_files, policy['javascript'])
+    findings += apex_findings + js_findings
+    errors += js_errors
     errors += apex_errors
+    from .external import parse
+    imported, import_errors = parse(external, analysis_files)
+    findings += imported
+    errors += import_errors
     rank = {'Critical': 0, 'High': 1, 'Medium': 2, 'Low': 3}
     findings.sort(key=lambda x: (rank[x['severity']], x['path'], x['line']))
     findings = quality.enrich(findings, analysis_files, policy)
@@ -319,6 +326,9 @@ def scan(current, baseline, version, policy=None, coverage=None):
         baseline_files = quality.filter_files(baseline, policy)
         base_findings, base_errors = metadata_checks(baseline_files)
         base_apex, base_apex_errors, _ = run_pmd(baseline_files, policy)
+        base_js, js_errors = analyze(baseline_files, policy['javascript'])
+        base_apex += base_js
+        base_apex_errors += js_errors
         errors += [{'message': 'Baseline analysis incomplete: ' + e.get('message', 'engine error')} for e in base_errors + base_apex_errors]
         previous = {f['fingerprint'] for f in quality.enrich(base_findings + base_apex, baseline_files, policy)}
         for f in findings:
@@ -340,6 +350,12 @@ def scan(current, baseline, version, policy=None, coverage=None):
         comparison='baseline' if baseline is not None else 'inventory', api_version=version,
         package_xml=manifest(rows, False, version), destructive_xml=manifest(rows, True, version))
 
+    from .new_coverage import measure
+    result['new_coverage'] = measure(analysis_files, quality.filter_files(baseline, policy) if baseline is not None else None, coverage_result)
+    result['external_report'] = external is not None
+    result['external_engines'] = ['SARIF:' + (re.sub(r'[^A-Za-z0-9_.-]', '_', str(run.get('tool', {}).get('driver', {}).get('name', 'external')))[:60] or 'external') for run in external['runs']] if external else []
+    if external is not None:
+        result['warnings'].append('External SARIF is caller-supplied evidence. Suppressions are ignored. With an uploaded baseline, imported findings are considered new because no baseline SARIF was supplied.')
     result.update(metrics=quality.code_metrics(analysis_files), coverage=coverage_result, duplication=duplication,
                   new_code_reference=reference, policy=policy)
     result['metrics']['new_findings'] = sum(f['is_new'] for f in findings)

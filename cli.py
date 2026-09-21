@@ -210,15 +210,15 @@ def run_scan_via_api(server_url: str, user: str, password: str, project: str, cu
             return data.get("result", {})
     raise TimeoutError("Scan timed out waiting for server completion.")
 
-def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str, coverage=None, context=None):
+def run_scan_direct(current_zip: bytes, baseline_zip: bytes | None, api_version: str, coverage=None, context=None, external=None):
     from app import scanner
     current = scanner.read_zip(base64.b64encode(current_zip).decode())
     baseline = scanner.read_zip(base64.b64encode(baseline_zip).decode()) if baseline_zip else None
     from app.db import get_pg_config
     if context and (get_pg_config() or os.environ.get("DATA_DIR")):
         from app.persistence import direct_scan
-        return direct_scan(current, baseline, api_version, coverage, context)
-    return scanner.scan(current, baseline, api_version, coverage=coverage)
+        return direct_scan(current, baseline, api_version, coverage, context, external)
+    return scanner.scan(current, baseline, api_version, coverage=coverage, external=external)
 
 def get_modified_classes(git_root: Path, baseline: str | None, subpath: str | None = None) -> list[str]:
     """Find Apex classes modified or added relative to baseline or uncommitted changes."""
@@ -258,6 +258,7 @@ def main():
     parser.add_argument("--branch", default="main", help="Branch namespace for server history")
     parser.add_argument("--pull-request", default="", help="Numeric PR identifier; isolated issue namespace")
     parser.add_argument("--revision", default="", help="Commit SHA for traceability")
+    parser.add_argument("--sarif", help="External SARIF 2.1.0 report to import")
     parser.add_argument("--coverage", help="LCOV or Salesforce/normalized JSON coverage report")
     parser.add_argument("--run-tests", "-t", action="store_true", help="Run selective test classes for modified Apex classes via Salesforce CLI")
     parser.add_argument("--test-mapping", help="Path to class-to-test mapping JSON file (default: .appscan/test-mapping.json)")
@@ -285,6 +286,7 @@ def main():
         sys.exit(0)
 
     from app.coverage import parse_coverage
+    external = json.loads(Path(args.sarif).read_text()) if args.sarif else None
     coverage = parse_coverage(Path(args.coverage).read_text()) if args.coverage else None
 
     if args.run_tests and not coverage:
@@ -351,7 +353,7 @@ def main():
     if not args.offline:
         try:
             print(f"[*] Connecting to AppScan server at {server_url}...")
-            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage})
+            scan_result = run_scan_via_api(server_url, user, password, project, current_zip, baseline_zip, args.api_version, {"branch":args.branch, "pull_request":args.pull_request, "revision":args.revision, "coverage":coverage, "external":external})
         except Exception as exc:
             if args.fallback_offline:
                 print(f"[!] Notice: Server scan failed at {server_url} ({exc}).")
@@ -365,7 +367,7 @@ def main():
         sys.path.insert(0, str(appscan_dir))
         print("[*] Running scan via in-process engine...")
         scan_result = run_scan_direct(current_zip, baseline_zip, args.api_version, coverage,
-                                      {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision})
+                                      {'project': project, 'branch': args.branch, 'pull_request': args.pull_request, 'revision': args.revision}, external=external)
 
     for item, sz in all_skipped:
         scan_result.setdefault("warnings", []).append(f"Skipped file '{item}' ({sz / (1024 * 1024):.1f} MiB): exceeds 2 MiB per-file limit.")
